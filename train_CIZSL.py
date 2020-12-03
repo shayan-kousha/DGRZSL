@@ -191,7 +191,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         nets = [netG, netD, log_SM_ab]
     else:
         nets = [netG, netD]
-
+    import ipdb; ipdb.set_trace()
     tr_cls_centroid = Variable(torch.from_numpy(dataset.tr_cls_centroid.astype('float32'))).cuda()
     optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(0.5, 0.9))
