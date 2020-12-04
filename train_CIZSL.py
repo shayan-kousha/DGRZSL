@@ -60,7 +60,7 @@ parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--resume', type=str, help='the model to resume')
 parser.add_argument('--disp_interval', type=int, default=20)
 parser.add_argument('--save_interval', type=int, default=200)
-parser.add_argument('--evl_interval', type=int, default=10)  
+parser.add_argument('--evl_interval', type=int, default=100)  
 # You might change the eval_interval to a higher value if wants to train the model faster, but not evaluate it at each step.
 
 opt = parser.parse_args()
@@ -191,7 +191,6 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         nets = [netG, netD, log_SM_ab]
     else:
         nets = [netG, netD]
-    import ipdb; ipdb.set_trace()
     tr_cls_centroid = Variable(torch.from_numpy(dataset.tr_cls_centroid.astype('float32'))).cuda()
     optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(0.5, 0.9))
@@ -231,19 +230,23 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             z = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
 
             # GAN's D loss
-            D_real, C_real = netD(X)
+            # D_real, C_real = netD(X)
+            D_real = netD(X)
             D_loss_real = torch.mean(D_real)
-            C_loss_real = F.cross_entropy(C_real, y_true)
-            DC_loss = -D_loss_real + C_loss_real
+            # C_loss_real = F.cross_entropy(C_real, y_true)
+            # DC_loss = -D_loss_real + C_loss_real
+            DC_loss = -D_loss_real
             DC_loss.backward()
 
             # GAN's D loss
             G_sample = netG(z, text_feat).detach()
-            D_fake, C_fake = netD(G_sample)
+            # D_fake, C_fake = netD(G_sample)
+            D_fake = netD(G_sample)
             D_loss_fake = torch.mean(D_fake)
-            C_loss_fake = F.cross_entropy(C_fake, y_true)
+            # C_loss_fake = F.cross_entropy(C_fake, y_true)
 
-            DC_loss = D_loss_fake + C_loss_fake
+            # DC_loss = D_loss_fake + C_loss_fake
+            DC_loss = D_loss_fake
             DC_loss.backward()
 
             # train with gradient penalty (WGAN_GP)
@@ -267,15 +270,17 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             z = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
 
             G_sample = netG(z, text_feat)
-            D_fake, C_fake = netD(G_sample)
-            _, C_real = netD(X)
+            # D_fake, C_fake = netD(G_sample)
+            D_fake = netD(G_sample)
+            # _, C_real = netD(X)
 
             # GAN's G loss
             G_loss = torch.mean(D_fake)
             # Auxiliary classification loss
-            C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
+            # C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
 
-            GC_loss = -G_loss + C_loss
+            # GC_loss = -G_loss + C_loss
+            GC_loss = -G_loss
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
@@ -304,68 +309,70 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                 reg_Wz_loss = Wz.pow(2).sum(dim=0).sqrt().sum().mul(opt.REG_Wz_LAMBDA)
 
             # D(C| GX_fake)) + Classify GX_fake as real
-            D_creative_fake, C_creative_fake = netD(G_creative_sample)
-            if model_num == 1:  # KL Divergence
-                G_fake_C = F.log_softmax(C_creative_fake)
-            else:
-                G_fake_C = F.softmax(C_creative_fake)
+            # D_creative_fake, C_creative_fake = netD(G_creative_sample)
+            D_creative_fake = netD(G_creative_sample)
+            # if model_num == 1:  # KL Divergence
+            #     G_fake_C = F.log_softmax(C_creative_fake)
+            # else:
+            #     G_fake_C = F.softmax(C_creative_fake)
 
-            if model_num == 1:  # KL Divergence
-                entropy_GX_fake = (G_fake_C / G_fake_C.data.size(1)).mean()
-            elif model_num == 2:  # SM Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
+            # if model_num == 1:  # KL Divergence
+            #     entropy_GX_fake = (G_fake_C / G_fake_C.data.size(1)).mean()
+            # elif model_num == 2:  # SM Divergence
+            #     q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
+            #     q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
 
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = 0.2 + torch.div(SM_ab[0][1], 1.6666666666666667).cuda()
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 3:  # Bachatera Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-                SM_a = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_a.data.fill_(opt.SM_Alpha)
-                SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_b.data.fill_(opt.SM_Alpha)
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 4:  # Tsallis Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
+            #     SM_ab = F.sigmoid(log_SM_ab(ones))
+            #     SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
+            #     SM_b = 0.2 + torch.div(SM_ab[0][1], 1.6666666666666667).cuda()
+            #     pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
+            #     alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
+            #     entropy_GX_fake_vec = torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
+            # elif model_num == 3:  # Bachatera Divergence
+            #     q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
+            #     q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
+            #     SM_a = Variable(torch.FloatTensor(1, 1)).cuda()
+            #     SM_a.data.fill_(opt.SM_Alpha)
+            #     SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
+            #     SM_b.data.fill_(opt.SM_Alpha)
+            #     pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
+            #     alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
+            #     entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
+            # elif model_num == 4:  # Tsallis Divergence
+            #     q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
+            #     q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
 
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = SM_a
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 5:  # Renyi Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
+            #     SM_ab = F.sigmoid(log_SM_ab(ones))
+            #     SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
+            #     SM_b = SM_a
+            #     pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
+            #     alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
+            #     entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
+            # elif model_num == 5:  # Renyi Divergence
+            #     q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
+            #     q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
 
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_b.data.fill_(opt.SM_Beta)
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
+            #     SM_ab = F.sigmoid(log_SM_ab(ones))
+            #     SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
+            #     SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
+            #     SM_b.data.fill_(opt.SM_Beta)
+            #     pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
+            #     alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
+            #     entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
 
-            if model_num == 6:
-                loss_creative = F.cross_entropy(C_creative_fake, new_class_labels)
-            else:
-                if model_num != 1:
-                    # Normalize SM-Divergence & Report mean
-                    min_e, max_e = torch.min(entropy_GX_fake_vec), torch.max(entropy_GX_fake_vec)
-                    entropy_GX_fake_vec = (entropy_GX_fake_vec - min_e) / (max_e - min_e)
-                    entropy_GX_fake = -entropy_GX_fake_vec.mean()
-                loss_creative = -opt.Creative_weight * entropy_GX_fake
+            # if model_num == 6:
+            #     loss_creative = F.cross_entropy(C_creative_fake, new_class_labels)
+            # else:
+            #     if model_num != 1:
+            #         # Normalize SM-Divergence & Report mean
+            #         min_e, max_e = torch.min(entropy_GX_fake_vec), torch.max(entropy_GX_fake_vec)
+            #         entropy_GX_fake_vec = (entropy_GX_fake_vec - min_e) / (max_e - min_e)
+            #         entropy_GX_fake = -entropy_GX_fake_vec.mean()
+            #     loss_creative = -opt.Creative_weight * entropy_GX_fake
 
             disc_GX_fake_real = -torch.mean(D_creative_fake)
-            total_loss_creative = loss_creative + disc_GX_fake_real
+            # total_loss_creative = loss_creative + disc_GX_fake_real
+            total_loss_creative = disc_GX_fake_real           
 
             all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss + total_loss_creative
             all_loss.backward()
@@ -374,15 +381,15 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             optimizerG.step()
             reset_grad(nets)
 
-        if it % opt.disp_interval == 0 and it:
-            acc_real = (np.argmax(C_real.data.cpu().numpy(), axis=1) == y_true.data.cpu().numpy()).sum() / float(
-                y_true.data.size()[0])
-            acc_fake = (np.argmax(C_fake.data.cpu().numpy(), axis=1) == y_true.data.cpu().numpy()).sum() / float(
-                y_true.data.size()[0])
+        # if it % opt.disp_interval == 0 and it:
+        #     acc_real = (np.argmax(C_real.data.cpu().numpy(), axis=1) == y_true.data.cpu().numpy()).sum() / float(
+        #         y_true.data.size()[0])
+        #     acc_fake = (np.argmax(C_fake.data.cpu().numpy(), axis=1) == y_true.data.cpu().numpy()).sum() / float(
+        #         y_true.data.size()[0])
 
-            log_text =  'Iter-{}; rl: {:.4}%; fk: {:.4}%'.format(it, acc_real * 100, acc_fake * 100)
-            with open(log_dir, 'a') as f:
-                f.write(log_text + '\n')
+        #     log_text =  'Iter-{}; rl: {:.4}%; fk: {:.4}%'.format(it, acc_real * 100, acc_fake * 100)
+        #     with open(log_dir, 'a') as f:
+        #         f.write(log_text + '\n')
 
         if it % opt.evl_interval == 0 and it > opt.disp_interval:
             netG.eval()
@@ -404,9 +411,9 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'state_dict_G': netG.state_dict(),
                         'state_dict_D': netD.state_dict(),
                         'random_seed': opt.manualSeed,
-                        'log': log_text,
+                        # 'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
-
+            print("iteration: %d, best_acc: %d, best_auc: %d" % (it, result.best_acc, result.best_auc))
             netG.train()
     return result
 
@@ -521,7 +528,8 @@ def calc_gradient_penalty(netD, real_data, fake_data):
     interpolates = interpolates.cuda()
     interpolates = autograd.Variable(interpolates, requires_grad=True)
 
-    disc_interpolates, _ = netD(interpolates)
+    # disc_interpolates, _ = netD(interpolates)
+    disc_interpolates = netD(interpolates)
 
     gradients = autograd.grad(outputs=disc_interpolates, inputs=interpolates,
                               grad_outputs=torch.ones(disc_interpolates.size()).cuda(),
@@ -569,3 +577,6 @@ if __name__ == "__main__":
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
     print("Accuracy is {:.4}%, and Generalized AUC is {:.4}%".format(result.best_acc, result.best_auc))
+
+# chizai ke momkene baes shode bashe ke resultam shabi papernaboode bashe
+# is_val shayad bayad true bashe

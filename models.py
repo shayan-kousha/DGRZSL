@@ -39,9 +39,9 @@ class _netD(nn.Module):
         # Discriminator net branch one: For Gan_loss
         self.D_gan = nn.Linear(h_dim, 1)
         # Discriminator net branch two: For aux cls loss
-        self.D_aux = nn.Linear(h_dim, y_dim)
+        # self.D_aux = nn.Linear(h_dim, y_dim)
 
     def forward(self, input):
         h = self.D_shared(input)
-        return self.D_gan(h), self.D_aux(h)
+        return self.D_gan(h)#, self.D_aux(h)
 
