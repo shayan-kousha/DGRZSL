@@ -235,7 +235,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             D_loss_real = torch.mean(D_real)
             C_loss_real = F.cross_entropy(C_real, y_true)
             T_loss_real = torch.mean(F.cosine_similarity(text_feat, T_real))
-            DC_loss = -D_loss_real + C_loss_real + T_loss_real
+            DC_loss = -D_loss_real + C_loss_real - T_loss_real
             DC_loss.backward()
 
             # GAN's D loss
@@ -245,7 +245,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             C_loss_fake = F.cross_entropy(C_fake, y_true)
             T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
 
-            DC_loss = D_loss_fake + C_loss_fake + T_loss_fake
+            DC_loss = D_loss_fake + C_loss_fake - T_loss_fake
             DC_loss.backward()
 
             # train with gradient penalty (WGAN_GP)
@@ -277,8 +277,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             # Auxiliary classification loss
             C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
             T_loss = (torch.mean(F.cosine_similarity(text_feat, T_fake)) + torch.mean(F.cosine_similarity(text_feat, T_real))) / 2
-
-            GC_loss = -G_loss + C_loss + T_loss
+            GC_loss = -G_loss + C_loss - T_loss
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
