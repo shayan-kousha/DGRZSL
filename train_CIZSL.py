@@ -423,8 +423,8 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'random_seed': opt.manualSeed,
                         # 'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
-            print()
             log__test_text = 'iteration: %d, best_acc: %d, best_auc: %d' % (it, result.best_acc, result.best_auc)
+            print(log__test_text)
             with open(log_dir_test, 'a') as f:
                 f.write(log__test_text + '\n')
             netG.train()
