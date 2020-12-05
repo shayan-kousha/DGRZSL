@@ -152,7 +152,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
     if model_num == 6:
         netD = _netD(dataset.train_cls_num + 1, dataset.feature_dim).cuda()
     else:
-        netD = _netD(dataset.train_cls_num, dataset.feature_dim).cuda()
+        netD = _netD(dataset.train_cls_num, dataset.feature_dim, dataset.text_dim).cuda()
     netD.apply(weights_init)
 
     if model_num == 2:
@@ -170,7 +170,12 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         os.makedirs(out_subdir)
 
     log_dir = out_subdir + '/log_{:s}.txt'.format(exp_info)
+    log_dir_test = out_subdir + '/log_{:s}_test.txt'.format(exp_info)
     with open(log_dir, 'a') as f:
+        f.write('Training Start:')
+        f.write(strftime("%a, %d %b %Y %H:%M:%S +0000", gmtime()) + '\n')
+    
+    with open(log_dir_test, 'a') as f:
         f.write('Training Start:')
         f.write(strftime("%a, %d %b %Y %H:%M:%S +0000", gmtime()) + '\n')
 
@@ -231,22 +236,24 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             # GAN's D loss
             # D_real, C_real = netD(X)
-            D_real = netD(X)
+            D_real, T_real = netD(X)
             D_loss_real = torch.mean(D_real)
             # C_loss_real = F.cross_entropy(C_real, y_true)
+            T_loss_real = torch.mean(F.cosine_similarity(text_feat, T_real))
             # DC_loss = -D_loss_real + C_loss_real
-            DC_loss = -D_loss_real
+            DC_loss = -D_loss_real + T_loss_real
             DC_loss.backward()
 
             # GAN's D loss
             G_sample = netG(z, text_feat).detach()
             # D_fake, C_fake = netD(G_sample)
-            D_fake = netD(G_sample)
+            D_fake, T_fake = netD(G_sample)
             D_loss_fake = torch.mean(D_fake)
             # C_loss_fake = F.cross_entropy(C_fake, y_true)
+            T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
 
             # DC_loss = D_loss_fake + C_loss_fake
-            DC_loss = D_loss_fake
+            DC_loss = D_loss_fake + T_loss_fake
             DC_loss.backward()
 
             # train with gradient penalty (WGAN_GP)
@@ -271,16 +278,17 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             G_sample = netG(z, text_feat)
             # D_fake, C_fake = netD(G_sample)
-            D_fake = netD(G_sample)
+            D_fake, T_fake = netD(G_sample)
             # _, C_real = netD(X)
+            _, T_real = netD(X)
 
             # GAN's G loss
             G_loss = torch.mean(D_fake)
             # Auxiliary classification loss
             # C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
-
+            T_loss = torch.mean((F.cosine_similarity(text_feat, T_real) + F.cosine_similarity(text_feat, T_fake)) / 2)
             # GC_loss = -G_loss + C_loss
-            GC_loss = -G_loss
+            GC_loss = -G_loss + T_loss
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
@@ -310,7 +318,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             # D(C| GX_fake)) + Classify GX_fake as real
             # D_creative_fake, C_creative_fake = netD(G_creative_sample)
-            D_creative_fake = netD(G_creative_sample)
+            D_creative_fake, T_creative_fake = netD(G_creative_sample)
             # if model_num == 1:  # KL Divergence
             #     G_fake_C = F.log_softmax(C_creative_fake)
             # else:
@@ -370,9 +378,10 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             #         entropy_GX_fake = -entropy_GX_fake_vec.mean()
             #     loss_creative = -opt.Creative_weight * entropy_GX_fake
 
+            loss_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_creative_fake))
             disc_GX_fake_real = -torch.mean(D_creative_fake)
             # total_loss_creative = loss_creative + disc_GX_fake_real
-            total_loss_creative = disc_GX_fake_real           
+            total_loss_creative = disc_GX_fake_real + loss_creative     
 
             all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss + total_loss_creative
             all_loss.backward()
@@ -392,6 +401,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         #         f.write(log_text + '\n')
 
         if it % opt.evl_interval == 0 and it > opt.disp_interval:
+        # if True:
             netG.eval()
             cur_acc = eval_fakefeat_test(it, netG, dataset, param, result)
             cur_auc = eval_fakefeat_GZSL(netG, dataset, param, out_subdir, result)
@@ -413,7 +423,10 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'random_seed': opt.manualSeed,
                         # 'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
-            print("iteration: %d, best_acc: %d, best_auc: %d" % (it, result.best_acc, result.best_auc))
+            print()
+            log__test_text = 'iteration: %d, best_acc: %d, best_auc: %d' % (it, result.best_acc, result.best_auc)
+            with open(log_dir_test, 'a') as f:
+                f.write(log__test_text + '\n')
             netG.train()
     return result
 
@@ -528,8 +541,8 @@ def calc_gradient_penalty(netD, real_data, fake_data):
     interpolates = interpolates.cuda()
     interpolates = autograd.Variable(interpolates, requires_grad=True)
 
-    # disc_interpolates, _ = netD(interpolates)
-    disc_interpolates = netD(interpolates)
+    disc_interpolates, _ = netD(interpolates)
+    # disc_interpolates = netD(interpolates)
 
     gradients = autograd.grad(outputs=disc_interpolates, inputs=interpolates,
                               grad_outputs=torch.ones(disc_interpolates.size()).cuda(),

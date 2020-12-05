@@ -31,7 +31,7 @@ class _netG(nn.Module):
 
 
 class _netD(nn.Module):
-    def __init__(self, y_dim=150, X_dim=3584):
+    def __init__(self, y_dim=150, X_dim=3584, text_dim=7551):
         super(_netD, self).__init__()
         # Discriminator net layer one
         self.D_shared = nn.Sequential(nn.Linear(X_dim, h_dim),
@@ -40,8 +40,10 @@ class _netD(nn.Module):
         self.D_gan = nn.Linear(h_dim, 1)
         # Discriminator net branch two: For aux cls loss
         # self.D_aux = nn.Linear(h_dim, y_dim)
+        self.D_text = nn.Linear(h_dim, text_dim)
 
     def forward(self, input):
         h = self.D_shared(input)
-        return self.D_gan(h)#, self.D_aux(h)
+        # return self.D_gan(h)#, self.D_aux(h)
+        return self.D_gan(h), self.D_text(h)
 
