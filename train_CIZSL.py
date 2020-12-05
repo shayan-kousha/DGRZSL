@@ -60,7 +60,7 @@ parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--resume', type=str, help='the model to resume')
 parser.add_argument('--disp_interval', type=int, default=20)
 parser.add_argument('--save_interval', type=int, default=200)
-parser.add_argument('--evl_interval', type=int, default=10)  
+parser.add_argument('--evl_interval', type=int, default=100)  
 # You might change the eval_interval to a higher value if wants to train the model faster, but not evaluate it at each step.
 
 opt = parser.parse_args()
@@ -406,7 +406,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'random_seed': opt.manualSeed,
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
-
+            print('iteration: %d, best_acc: %d, best_auc: %d' % (it, result.best_acc, result.best_auc))
             netG.train()
     return result
 
