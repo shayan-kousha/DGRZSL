@@ -394,9 +394,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
-            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat, T_real)).data), float(torch.mean(F.c│
-osine_similarity(text_feat, T_fake)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fak│
-e_creative)).data)))
+            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat, T_fake)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative)).data)))
             netG.train()
     return result
 
