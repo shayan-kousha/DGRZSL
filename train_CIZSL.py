@@ -319,7 +319,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             G_sample_creative = netG(z, text_feat_Creative).detach()
             T_fake_creative = netT(G_sample_creative)
             T_loss_fake_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative))
-            D_creative_fake, _ = netD(G_creative_sample)
+            D_creative_fake, _ = netD(G_sample_creative)
             G_loss_fake_creative = torch.mean(D_creative_fake)
 
 
@@ -394,7 +394,9 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
-            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %d, fake_sim: %d' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat, T_fake)).data)))
+            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat, T_real)).data), float(torch.mean(F.c│
+osine_similarity(text_feat, T_fake)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fak│
+e_creative)).data)))
             netG.train()
     return result
 
