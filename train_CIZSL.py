@@ -236,14 +236,20 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             # GAN's T loss
             T_real = netT(X)
-            T_loss_real = -1 * torch.mean(F.cosine_similarity(text_feat, T_real))
-            T_loss_real.backward()
+            T_loss_real = torch.mean(F.cosine_similarity(text_feat, T_real))
 
             # GAN's T loss
             G_sample = netG(z, text_feat).detach()
             T_fake = netT(G_sample)
-            T_loss_fake = -1 * torch.mean(F.cosine_similarity(text_feat, T_fake))
-            T_loss_fake.backward()
+            T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
+
+            # GAN's T loss
+            G_sample_creative = netG(z, text_feat_Creative).detach()
+            T_fake_creative = netT(G_sample_creative)
+            T_loss_fake_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative))
+
+            T_loss = -1 * T_loss_real - T_loss_fake -T_loss_fake_creative
+            T_loss.backward()
 
             # torch.sum(netD.D_gan.weight.data) 
             # torch.sum(netG.main[0].weight.data) 
@@ -309,7 +315,15 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             # Auxiliary classification loss
             C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
 
-            GC_loss = -G_loss + C_loss - T_loss_fake
+            # GAN's G loss creative
+            G_sample_creative = netG(z, text_feat_Creative).detach()
+            T_fake_creative = netT(G_sample_creative)
+            T_loss_fake_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative))
+            D_creative_fake, _ = netD(G_creative_sample)
+            G_loss_fake_creative = torch.mean(D_creative_fake)
+
+
+            GC_loss = -G_loss - G_loss_fake_creative + C_loss - T_loss_fake - T_loss_fake_creative
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
