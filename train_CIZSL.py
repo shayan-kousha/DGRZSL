@@ -229,24 +229,24 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             labels = blobs['labels'].astype(int)  # class labels
 
             text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
-            text_feat = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
+            text_feat_TG = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
             X = Variable(torch.from_numpy(feat_data)).cuda()
             y_true = Variable(torch.from_numpy(labels.astype('int'))).cuda()
             z = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
 
             # GAN's T loss
             T_real = netT(X)
-            T_loss_real = torch.mean(F.cosine_similarity(text_feat, T_real))
+            T_loss_real = torch.mean(F.cosine_similarity(text_feat_TG, T_real))
 
             # GAN's T loss
-            G_sample = netG(z, text_feat).detach()
-            T_fake = netT(G_sample)
-            T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
+            G_sample = netG(z, text_feat_TG).detach()
+            T_fake_TG = netT(G_sample)
+            T_loss_fake = torch.mean(F.cosine_similarity(text_feat_TG, T_fake_TG))
 
             # GAN's T loss
             G_sample_creative = netG(z, text_feat_Creative).detach()
-            T_fake_creative = netT(G_sample_creative)
-            T_loss_fake_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative))
+            T_fake_creative_TG = netT(G_sample_creative)
+            T_loss_fake_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative_TG))
 
             T_loss = -1 * T_loss_real - T_loss_fake -T_loss_fake_creative
             T_loss.backward()
@@ -369,7 +369,6 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             log_text =  'Iter-{}; rl: {:.4}%; fk: {:.4}%'.format(it, acc_real * 100, acc_fake * 100)
             with open(log_dir, 'a') as f:
                 f.write(log_text + '\n')
-
         if it % opt.evl_interval == 0 and it > opt.disp_interval:
             netG.eval()
             cur_acc = eval_fakefeat_test(it, netG, dataset, param, result)
@@ -394,7 +393,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
-            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat, T_fake)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative)).data)))
+            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat_TG, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat_TG, T_fake_TG)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative_TG)).data)))
             netG.train()
     return result
 
