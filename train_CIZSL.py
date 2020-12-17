@@ -26,7 +26,7 @@ import sys
 from tqdm import tqdm
 
 from dataset import FeatDataLayer, LoadDataset, LoadDataset_NAB
-from models import _netD, _netG, _param
+from models import _netD, _netG, _netT, _param
 
 parser = argparse.ArgumentParser()
 
@@ -60,7 +60,7 @@ parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--resume', type=str, help='the model to resume')
 parser.add_argument('--disp_interval', type=int, default=20)
 parser.add_argument('--save_interval', type=int, default=200)
-parser.add_argument('--evl_interval', type=int, default=10)  
+parser.add_argument('--evl_interval', type=int, default=100)  
 # You might change the eval_interval to a higher value if wants to train the model faster, but not evaluate it at each step.
 
 opt = parser.parse_args()
@@ -149,6 +149,8 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
     netG = _netG(dataset.text_dim, dataset.feature_dim).cuda()
     netG.apply(weights_init)
+    netT = _netT(dataset.train_cls_num , dataset.feature_dim, dataset.text_dim).cuda()
+    netT.apply(weights_init)
     if model_num == 6:
         netD = _netD(dataset.train_cls_num + 1, dataset.feature_dim).cuda()
     else:
@@ -182,18 +184,20 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             checkpoint = torch.load(opt.resume)
             netG.load_state_dict(checkpoint['state_dict_G'])
             netD.load_state_dict(checkpoint['state_dict_D'])
+            netT.load_state_dict(checkpoint['state_dict_T'])
             start_step = checkpoint['it']
             print(checkpoint['log'])
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
     if model_num == 2 or model_num == 4 or model_num == 5:
-        nets = [netG, netD, log_SM_ab]
+        nets = [netG, netD, netT]
     else:
-        nets = [netG, netD]
+        nets = [netG, netD, netT]
 
     tr_cls_centroid = Variable(torch.from_numpy(dataset.tr_cls_centroid.astype('float32'))).cuda()
     optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(0.5, 0.9))
+    optimizerT = optim.Adam(netT.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     if model_num == 2 or model_num == 4 or model_num == 5:
         optimizer_SM_ab = optim.Adam(log_SM_ab.parameters(), lr=opt.lr, betas=(0.5, 0.999))
@@ -216,7 +220,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         text_feat_mean = normalize(text_feat_mean, norm='l2', axis=1)
         text_feat_Creative = Variable(torch.from_numpy(text_feat_mean.astype('float32'))).cuda()
         z_creative = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
-        G_creative_sample = netG(z_creative, text_feat_Creative)
+      
 
         """ Discriminator """
         for _ in range(5):
@@ -232,18 +236,22 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             # GAN's D loss
             D_real, C_real = netD(X)
+            T_real = netT(X)
             D_loss_real = torch.mean(D_real)
+            T_loss_real = torch.mean(F.cosine_similarity(text_feat, T_real))
             C_loss_real = F.cross_entropy(C_real, y_true)
-            DC_loss = -D_loss_real + C_loss_real
+            DC_loss = -D_loss_real + C_loss_real - T_loss_real
             DC_loss.backward()
 
             # GAN's D loss
             G_sample = netG(z, text_feat).detach()
             D_fake, C_fake = netD(G_sample)
+            T_fake = netT(G_sample)
             D_loss_fake = torch.mean(D_fake)
+            T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
             C_loss_fake = F.cross_entropy(C_fake, y_true)
 
-            DC_loss = D_loss_fake + C_loss_fake
+            DC_loss = D_loss_fake + C_loss_fake - T_loss_fake
             DC_loss.backward()
 
             # train with gradient penalty (WGAN_GP)
@@ -268,14 +276,16 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             G_sample = netG(z, text_feat)
             D_fake, C_fake = netD(G_sample)
+            T_fake = netT(G_sample)
             _, C_real = netD(X)
 
             # GAN's G loss
             G_loss = torch.mean(D_fake)
+            T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
             # Auxiliary classification loss
             C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
 
-            GC_loss = -G_loss + C_loss
+            GC_loss = -G_loss + C_loss - T_loss_fake
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
@@ -304,73 +314,12 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                 reg_Wz_loss = Wz.pow(2).sum(dim=0).sqrt().sum().mul(opt.REG_Wz_LAMBDA)
 
             # D(C| GX_fake)) + Classify GX_fake as real
-            D_creative_fake, C_creative_fake = netD(G_creative_sample)
-            if model_num == 1:  # KL Divergence
-                G_fake_C = F.log_softmax(C_creative_fake)
-            else:
-                G_fake_C = F.softmax(C_creative_fake)
+           
 
-            if model_num == 1:  # KL Divergence
-                entropy_GX_fake = (G_fake_C / G_fake_C.data.size(1)).mean()
-            elif model_num == 2:  # SM Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = 0.2 + torch.div(SM_ab[0][1], 1.6666666666666667).cuda()
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 3:  # Bachatera Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-                SM_a = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_a.data.fill_(opt.SM_Alpha)
-                SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_b.data.fill_(opt.SM_Alpha)
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 4:  # Tsallis Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = SM_a
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 5:  # Renyi Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_b.data.fill_(opt.SM_Beta)
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-
-            if model_num == 6:
-                loss_creative = F.cross_entropy(C_creative_fake, new_class_labels)
-            else:
-                if model_num != 1:
-                    # Normalize SM-Divergence & Report mean
-                    min_e, max_e = torch.min(entropy_GX_fake_vec), torch.max(entropy_GX_fake_vec)
-                    entropy_GX_fake_vec = (entropy_GX_fake_vec - min_e) / (max_e - min_e)
-                    entropy_GX_fake = -entropy_GX_fake_vec.mean()
-                loss_creative = -opt.Creative_weight * entropy_GX_fake
-
-            disc_GX_fake_real = -torch.mean(D_creative_fake)
-            total_loss_creative = loss_creative + disc_GX_fake_real
-
-            all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss + total_loss_creative
+            all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss 
             all_loss.backward()
-            if model_num == 2 or model_num == 4 or model_num == 5:
-                optimizer_SM_ab.step()
+            # if model_num == 2 or model_num == 4 or model_num == 5:
+            #     optimizer_SM_ab.step()
             optimizerG.step()
             reset_grad(nets)
 
@@ -403,10 +352,12 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'it': it + 1,
                         'state_dict_G': netG.state_dict(),
                         'state_dict_D': netD.state_dict(),
+                        'state_dict_T': netT.state_dict(),
                         'random_seed': opt.manualSeed,
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
+            print('iteration: %d, best_acc: %d, best_auc: %d' % (it, result.best_acc, result.best_auc))
             netG.train()
     return result
 
