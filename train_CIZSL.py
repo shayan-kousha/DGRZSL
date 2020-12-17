@@ -222,6 +222,34 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         z_creative = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
       
 
+        """ Text Feat Generator """
+        for _ in range(5):
+            blobs = data_layer.forward()
+            feat_data = blobs['data']  # image data
+            labels = blobs['labels'].astype(int)  # class labels
+
+            text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
+            text_feat = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
+            X = Variable(torch.from_numpy(feat_data)).cuda()
+            y_true = Variable(torch.from_numpy(labels.astype('int'))).cuda()
+            z = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
+
+            # GAN's T loss
+            T_real = netT(X)
+            T_loss_real = -1 * torch.mean(F.cosine_similarity(text_feat, T_real))
+            T_loss_real.backward()
+
+            # GAN's T loss
+            G_sample = netG(z, text_feat).detach()
+            T_fake = netT(G_sample)
+            T_loss_fake = -1 * torch.mean(F.cosine_similarity(text_feat, T_fake))
+            T_loss_fake.backward()
+
+            # torch.sum(netD.D_gan.weight.data) 
+            # torch.sum(netG.main[0].weight.data) 
+            optimizerT.step()
+            reset_grad(nets)
+
         """ Discriminator """
         for _ in range(5):
             blobs = data_layer.forward()
@@ -236,22 +264,18 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             # GAN's D loss
             D_real, C_real = netD(X)
-            T_real = netT(X)
             D_loss_real = torch.mean(D_real)
-            T_loss_real = torch.mean(F.cosine_similarity(text_feat, T_real))
             C_loss_real = F.cross_entropy(C_real, y_true)
-            DC_loss = -D_loss_real + C_loss_real - T_loss_real
+            DC_loss = -D_loss_real + C_loss_real
             DC_loss.backward()
 
             # GAN's D loss
             G_sample = netG(z, text_feat).detach()
             D_fake, C_fake = netD(G_sample)
-            T_fake = netT(G_sample)
             D_loss_fake = torch.mean(D_fake)
-            T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
             C_loss_fake = F.cross_entropy(C_fake, y_true)
 
-            DC_loss = D_loss_fake + C_loss_fake - T_loss_fake
+            DC_loss = D_loss_fake + C_loss_fake
             DC_loss.backward()
 
             # train with gradient penalty (WGAN_GP)
@@ -318,8 +342,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss 
             all_loss.backward()
-            # if model_num == 2 or model_num == 4 or model_num == 5:
-            #     optimizer_SM_ab.step()
+            
             optimizerG.step()
             reset_grad(nets)
 
@@ -357,7 +380,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
-            print('iteration: %d, best_acc: %d, best_auc: %d' % (it, result.best_acc, result.best_auc))
+            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %d, fake_sim: %d' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat, T_fake)).data)))
             netG.train()
     return result
 
