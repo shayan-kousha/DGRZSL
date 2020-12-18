@@ -172,6 +172,7 @@ def train(model_num=1, is_val=True):
             netT.load_state_dict(checkpoint['state_dict_T'])
             start_step = checkpoint['it']
             print(checkpoint['log'])
+            import ipdb; ipdb.set_trace()
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
@@ -364,18 +365,17 @@ def train(model_num=1, is_val=True):
             if cur_auc > result.best_auc:
                 result.best_auc = cur_auc
 
-                if it % opt.save_interval:
-                    files2remove = glob.glob(out_subdir + '/Best_model*')
-                    for _i in files2remove:
-                        os.remove(_i)
-                    torch.save({
-                        'it': it + 1,
-                        'state_dict_G': netG.state_dict(),
-                        'state_dict_D': netD.state_dict(),
-                        'state_dict_T': netT.state_dict(),
-                        'random_seed': opt.manualSeed,
-                        'log': log_text,
-                    }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
+                files2remove = glob.glob(out_subdir + '/Best_model*')
+                for _i in files2remove:
+                    os.remove(_i)
+                torch.save({
+                    'it': it + 1,
+                    'state_dict_G': netG.state_dict(),
+                    'state_dict_D': netD.state_dict(),
+                    'state_dict_T': netT.state_dict(),
+                    'random_seed': opt.manualSeed,
+                    'log': log_text,
+                }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
             log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean(similarity_func(text_feat_TG, T_real)).data), float(torch.mean(similarity_func(text_feat_TG, T_fake_TG)).data), float(torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG)).data))
             with open(log_dir_2, 'a') as f:
