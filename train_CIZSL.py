@@ -26,7 +26,7 @@ import sys
 from tqdm import tqdm
 
 from dataset import FeatDataLayer, LoadDataset, LoadDataset_NAB
-from models import _netD, _netG, _netT, _param
+from models import _netD, _netG, _netT, _classifier, _param
 
 parser = argparse.ArgumentParser()
 
@@ -370,13 +370,17 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             log_text =  'Iter-{}; rl: {:.4}%; fk: {:.4}%'.format(it, acc_real * 100, acc_fake * 100)
             with open(log_dir, 'a') as f:
                 f.write(log_text + '\n')
+
         if it % opt.evl_interval == 0 and it > opt.disp_interval:
             netG.eval()
-            cur_acc = eval_fakefeat_test(it, netG, dataset, param, result)
+            cur_acc, cur_nn_acc = eval_fakefeat_test(it, netG, dataset, param, result)
             cur_auc = eval_fakefeat_GZSL(netG, dataset, param, out_subdir, result)
-            
+
             if cur_acc > result.best_acc:
               result.best_acc = cur_acc
+
+            if cur_nn_acc > result.best_nn_acc:
+                result.best_nn_acc = cur_nn_acc
 
             if cur_auc > result.best_auc:
                 result.best_auc = cur_auc
@@ -394,7 +398,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
-            print('iteration: %d, best_acc: %d, best_auc: %d, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat_TG, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat_TG, T_fake_TG)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative_TG)).data)))
+            print('iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat_TG, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat_TG, T_fake_TG)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative_TG)).data)))
             netG.train()
     return result
 
@@ -445,13 +449,35 @@ def eval_fakefeat_GZSL(netG, dataset, param, plot_dir, result):
     result.auc_list += [auc_score]
     return auc_score
 
+def train_classifier(train_data, train_label, test_data, test_label, num_class):
+    classifier = _classifier(train_data.shape[1], num_class).cuda()
+    classifier.apply(weights_init)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(classifier.parameters(), lr=0.01, betas=(0.5, 0.9))
+
+    for epoch in range(50):
+        optimizer.zero_grad()
+
+        # forward + backward + optimize
+        X = Variable(torch.from_numpy(train_data)).cuda().type(torch.cuda.FloatTensor)
+        y = Variable(torch.from_numpy(train_label)).cuda().type(torch.cuda.LongTensor) 
+
+        outputs = classifier(X)
+        loss = criterion(outputs, y)
+        loss.backward()
+        optimizer.step()
+
+    X_test = Variable(torch.from_numpy(test_data)).cuda().type(torch.cuda.FloatTensor)
+    outputs = classifier(X_test)
+    acc = (np.asarray(torch.argmax(outputs, 1)) == test_label).mean() * 100
+    return acc
 
 def eval_fakefeat_test(it, netG, dataset, param, result):
     # TODO az aksaye sample shode save konam
     # TODO az ye classifier dige estefade konam
     # TODO ye barname benevsam ke hame model haro baham run kone baraye har 4 dataset
     # 1. original GAZEL ye repo dige
-    # 2. CIZL
+    # 2. CIZSL
     # 3. modele man + cosine similarity + k means
     # 4. modele man + cosine similarity + ye model dige ke train mishe
     # 5. model man + mean squared similarity + k means
@@ -459,12 +485,16 @@ def eval_fakefeat_test(it, netG, dataset, param, result):
     # TODO negah andakhtan be chizai ke too variable log_dir save shode
     # TODO negah andakhtan be sorat converg kardan har model
     gen_feat = np.zeros([0, param.X_dim])
+    gen_labels = np.zeros([0])
     for i in range(dataset.test_cls_num):
         text_feat = np.tile(dataset.test_text_feature[i].astype('float32'), (opt.nSample, 1))
         text_feat = Variable(torch.from_numpy(text_feat)).cuda()
         z = Variable(torch.randn(opt.nSample, param.z_dim)).cuda()
         G_sample = netG(z, text_feat)
         gen_feat = np.vstack((gen_feat, G_sample.data.cpu().numpy()))
+
+        labels = np.tile(i, (opt.nSample))
+        gen_labels = np.hstack((gen_labels, labels))
 
     # cosince predict K-nearest Neighbor
     sim = cosine_similarity(dataset.pfc_feat_data_test, gen_feat)
@@ -479,13 +509,15 @@ def eval_fakefeat_test(it, netG, dataset, param, result):
     label_T = np.asarray(dataset.labels_test)
     acc = (preds == label_T).mean() * 100
 
+    nn_acc = train_classifier(gen_feat, gen_labels, dataset.pfc_feat_data_test, label_T, dataset.test_cls_num)
     result.acc_list += [acc]
-    return acc
+    return acc, nn_acc
 
 
 class Result(object):
     def __init__(self):
         self.best_acc = 0.0
+        self.best_nn_acc = 0.0
         self.best_auc = 0.0
         self.best_iter = 0.0
         self.acc_list = []
@@ -567,4 +599,4 @@ if __name__ == "__main__":
     print('=' * 15)
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
-    print("Accuracy is {:.4}%, and Generalized AUC is {:.4}%".format(result.best_acc, result.best_auc))
+    print("Accuracy is {:.4}%, NN Accuracy is {:.4}%, and Generalized AUC is {:.4}%".format(result.best_acc, result.best_nn_acc, result.best_auc))
