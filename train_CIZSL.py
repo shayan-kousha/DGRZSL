@@ -40,28 +40,17 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--dataset', type=str, help='dataset to be used: CUB/NAB', default='NAB')
 parser.add_argument('--splitmode', type=str, help='the way to split train/test data: easy/hard', default='hard')
-parser.add_argument('--model_number', type=int, help='Model-Number: 1 for KL, 2 for Sharma-Entropy, 3 for Bachatera,'
-                                                     '4 for Tsallis, 5 for Renyi, 6 K+1 Classification', default=2)
+parser.add_argument('--model_number', type=int, help='Model-Number: 1 for cosine similarity and 2 MSE,', default=1)
 parser.add_argument('--exp_name', default='Reproduce', type=str, help='Experiment Name')
 parser.add_argument('--main_dir', default='./', type=str,
                     help='Main Directory including data folder')
 
-parser.add_argument('--creativity_weight', type=float, default=0.1, help='Weight of CIZSL loss- '
-                                                                         'Varies by Dataset & SplitMode- '
-                                                                         'Best values are in main function - '
-                                                                         'Can be obtained by running cross-validation')
-parser.add_argument('--validate', default=0, type=int, help='1 to validate and find best creativity weight, '
-                                                             'otherwise use --creativity_weight')
-
-parser.add_argument('--SM_Alpha', default='0.5', type=float, help='alpha weight of SM divergence')
-parser.add_argument('--SM_Beta', default='0.9999', type=float, help='beta weight of SM divergence')
 parser.add_argument('--gpu', default='0', type=str, help='index of GPU to use')
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--resume', type=str, help='the model to resume')
 parser.add_argument('--disp_interval', type=int, default=20)
 parser.add_argument('--save_interval', type=int, default=200)
 parser.add_argument('--evl_interval', type=int, default=100)  
-# You might change the eval_interval to a higher value if wants to train the model faster, but not evaluate it at each step.
 
 opt = parser.parse_args()
 print(opt)
@@ -127,7 +116,7 @@ class Scale(nn.Module):
             out = layer(out)
         return out
 
-def train(creative_weight=1000, model_num=1, is_val=True):
+def train(model_num=1, is_val=True):
     param = _param()
     if opt.dataset == 'CUB':
         dataset = LoadDataset(opt, main_dir, is_val)
@@ -139,7 +128,6 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         print('No Dataset with that name')
         sys.exit(0)
     param.X_dim = dataset.feature_dim
-    opt.Creative_weight = creative_weight
 
     data_layer = FeatDataLayer(dataset.labels_train, dataset.pfc_feat_data_train, opt)
     result = Result()
@@ -151,20 +139,16 @@ def train(creative_weight=1000, model_num=1, is_val=True):
     netG.apply(weights_init)
     netT = _netT(dataset.train_cls_num , dataset.feature_dim, dataset.text_dim).cuda()
     netT.apply(weights_init)
-    if model_num == 6:
-        netD = _netD(dataset.train_cls_num + 1, dataset.feature_dim).cuda()
-    else:
-        netD = _netD(dataset.train_cls_num, dataset.feature_dim).cuda()
+    netD = _netD(dataset.train_cls_num, dataset.feature_dim).cuda()
     netD.apply(weights_init)
 
-    if model_num == 2:
-        log_SM_ab = Scale(2)
-        log_SM_ab = nn.DataParallel(log_SM_ab).cuda()
-    elif model_num == 4 or model_num == 5:
-        log_SM_ab = Scale(1)
-        log_SM_ab = nn.DataParallel(log_SM_ab).cuda()
+    similarity_func = None
+    if model_num == 1:
+        similarity_func = F.cosine_similarity
+    elif model_num == 2:
+        similarity_func = F.MSELoss
 
-    exp_params = 'Model_{}_CAN{}_Eu{}_Rls{}_RWz{}_{}'.format(model_num, opt.Creative_weight, opt.CENT_LAMBDA,
+    exp_params = 'Model_{}_Eu{}_Rls{}_RWz{}_{}'.format(model_num, opt.CENT_LAMBDA,
                                                              opt.REG_W_LAMBDA, opt.REG_Wz_LAMBDA, opt.exp_name)
 
     out_subdir = main_dir + 'out/{:s}/{:s}'.format(exp_info, exp_params)
@@ -172,6 +156,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         os.makedirs(out_subdir)
 
     log_dir = out_subdir + '/log_{:s}.txt'.format(exp_info)
+    log_dir_2 = out_subdir + '/log_{:s}_iterations.txt'.format(exp_info)
     with open(log_dir, 'a') as f:
         f.write('Training Start:')
         f.write(strftime("%a, %d %b %Y %H:%M:%S +0000", gmtime()) + '\n')
@@ -190,20 +175,14 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
-    if model_num == 2 or model_num == 4 or model_num == 5:
-        nets = [netG, netD, netT]
-    else:
-        nets = [netG, netD, netT]
+    nets = [netG, netD, netT]
 
     tr_cls_centroid = Variable(torch.from_numpy(dataset.tr_cls_centroid.astype('float32'))).cuda()
     optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerT = optim.Adam(netT.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(0.5, 0.9))
-    if model_num == 2 or model_num == 4 or model_num == 5:
-        optimizer_SM_ab = optim.Adam(log_SM_ab.parameters(), lr=opt.lr, betas=(0.5, 0.999))
 
     for it in tqdm(range(start_step, 3000 + 1)):
-        # Creative Loss
         blobs = data_layer.forward()
         labels = blobs['labels'].astype(int)
         new_class_labels = Variable(
@@ -236,17 +215,17 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             # GAN's T loss
             T_real = netT(X)
-            T_loss_real = torch.mean(F.cosine_similarity(text_feat_TG, T_real))
+            T_loss_real = torch.mean(similarity_func(text_feat_TG, T_real))
 
             # GAN's T loss
             G_sample = netG(z, text_feat_TG).detach()
             T_fake_TG = netT(G_sample)
-            T_loss_fake = torch.mean(F.cosine_similarity(text_feat_TG, T_fake_TG))
+            T_loss_fake = torch.mean(similarity_func(text_feat_TG, T_fake_TG))
 
             # GAN's T loss
             G_sample_creative = netG(z, text_feat_Creative).detach()
             T_fake_creative_TG = netT(G_sample_creative)
-            T_loss_fake_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative_TG))
+            T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG))
 
             T_loss = -1 * T_loss_real - T_loss_fake -T_loss_fake_creative
             T_loss.backward()
@@ -312,14 +291,14 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             # GAN's G loss
             G_loss = torch.mean(D_fake)
-            T_loss_fake = torch.mean(F.cosine_similarity(text_feat, T_fake))
+            T_loss_fake = torch.mean(similarity_func(text_feat, T_fake))
             # Auxiliary classification loss
             C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
 
             # GAN's G loss creative
             G_sample_creative = netG(z, text_feat_Creative).detach()
             T_fake_creative = netT(G_sample_creative)
-            T_loss_fake_creative = torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative))
+            T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative))
             D_creative_fake, _ = netD(G_sample_creative)
             G_loss_fake_creative = torch.mean(D_creative_fake)
 
@@ -398,7 +377,9 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                         'log': log_text,
                     }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
-            print('iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean(F.cosine_similarity(text_feat_TG, T_real)).data), float(torch.mean(F.cosine_similarity(text_feat_TG, T_fake_TG)).data), float(torch.mean(F.cosine_similarity(text_feat_Creative, T_fake_creative_TG)).data)))
+            log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean(similarity_func(text_feat_TG, T_real)).data), float(torch.mean(similarity_func(text_feat_TG, T_fake_TG)).data), float(torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG)).data))
+            with open(log_dir_2, 'a') as f:
+                f.write(log_text_2 + '\n')
             netG.train()
     return result
 
@@ -560,26 +541,6 @@ def calc_gradient_penalty(netD, real_data, fake_data):
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * opt.GP_LAMBDA
     return gradient_penalty
 
-
-def return_best_creativity_weight_validation(creative_weights=[0.0001, 0.001, 0.1, 1, 10, 100, 1000]):
-    # Validation
-    max_acc, best_w = -1, 1
-    for cr_w in creative_weights:
-        print("{:s} - {:s}".format(opt.dataset, opt.splitmode))
-        print("{} - {}".format(cr_w, opt.model_number))
-        print('*' * 10)
-        random.seed(opt.manualSeed)
-        torch.manual_seed(opt.manualSeed)
-        torch.cuda.manual_seed_all(opt.manualSeed)
-        result = train(cr_w, opt.model_number, is_val=False)
-        if result.best_auc > max_acc:
-            max_acc = result.best_auc
-            max_res = result
-            best_w = cr_w
-
-    return best_w, max_res
-
-
 if __name__ == "__main__":
     # Inference
     """
@@ -589,13 +550,10 @@ if __name__ == "__main__":
     NAB-EASY: 1
     NAB-HARD: 0.1
     """
-    cr_weight = opt.creativity_weight
-    if opt.validate == 1:
-        cr_weight, _ = return_best_creativity_weight_validation()
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
     torch.cuda.manual_seed_all(opt.manualSeed)
-    result = train(cr_weight, opt.model_number, is_val=False)
+    result = train(opt.model_number, is_val=False)
     print('=' * 15)
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
