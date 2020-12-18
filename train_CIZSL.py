@@ -254,6 +254,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             # torch.sum(netD.D_gan.weight.data) 
             # torch.sum(netG.main[0].weight.data) 
             optimizerT.step()
+            optimizerG.step()
             reset_grad(nets)
 
         """ Discriminator """
@@ -446,6 +447,17 @@ def eval_fakefeat_GZSL(netG, dataset, param, plot_dir, result):
 
 
 def eval_fakefeat_test(it, netG, dataset, param, result):
+    # TODO az aksaye sample shode save konam
+    # TODO az ye classifier dige estefade konam
+    # TODO ye barname benevsam ke hame model haro baham run kone baraye har 4 dataset
+    # 1. original GAZEL ye repo dige
+    # 2. CIZL
+    # 3. modele man + cosine similarity + k means
+    # 4. modele man + cosine similarity + ye model dige ke train mishe
+    # 5. model man + mean squared similarity + k means
+    # 6. model man + mean squared similarity  + ye model dige ke trian mishe
+    # TODO negah andakhtan be chizai ke too variable log_dir save shode
+    # TODO negah andakhtan be sorat converg kardan har model
     gen_feat = np.zeros([0, param.X_dim])
     for i in range(dataset.test_cls_num):
         text_feat = np.tile(dataset.test_text_feature[i].astype('float32'), (opt.nSample, 1))
