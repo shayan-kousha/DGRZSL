@@ -146,7 +146,7 @@ def train(model_num=1, is_val=True):
     if model_num == 1:
         similarity_func = F.cosine_similarity
     elif model_num == 2:
-        similarity_func = F.MSELoss
+        similarity_func = F.mse_loss
 
     exp_params = 'Model_{}_Eu{}_Rls{}_RWz{}_{}'.format(model_num, opt.CENT_LAMBDA,
                                                              opt.REG_W_LAMBDA, opt.REG_Wz_LAMBDA, opt.exp_name)
@@ -172,7 +172,6 @@ def train(model_num=1, is_val=True):
             netT.load_state_dict(checkpoint['state_dict_T'])
             start_step = checkpoint['it']
             print(checkpoint['log'])
-            import ipdb; ipdb.set_trace()
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
