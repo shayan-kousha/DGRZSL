@@ -30,14 +30,6 @@ from models import _netD, _netG, _netT, _classifier, _param
 
 parser = argparse.ArgumentParser()
 
-"""
-  Values of Cross-validation CIZSL loss weight (Sharma-Entropy)
-  CUB-EASY: 0.0001
-  CUB-HARD: 0.1
-  NAB-EASY: 1
-  NAB-HARD: 0.1
-"""
-
 parser.add_argument('--dataset', type=str, help='dataset to be used: CUB/NAB', default='NAB')
 parser.add_argument('--splitmode', type=str, help='the way to split train/test data: easy/hard', default='hard')
 parser.add_argument('--model_number', type=int, help='Model-Number: 1 for cosine similarity and 2 MSE,', default=1)
@@ -230,8 +222,6 @@ def train(model_num=1, is_val=True):
             T_loss = -1 * T_loss_real - T_loss_fake -T_loss_fake_creative
             T_loss.backward()
 
-            # torch.sum(netD.D_gan.weight.data) 
-            # torch.sum(netG.main[0].weight.data) 
             optimizerT.step()
             optimizerG.step()
             reset_grad(nets)
@@ -453,17 +443,6 @@ def train_classifier(train_data, train_label, test_data, test_label, num_class):
     return acc
 
 def eval_fakefeat_test(it, netG, dataset, param, result):
-    # TODO az aksaye sample shode save konam
-    # TODO az ye classifier dige estefade konam
-    # TODO ye barname benevsam ke hame model haro baham run kone baraye har 4 dataset
-    # 1. original GAZEL ye repo dige
-    # 2. CIZSL
-    # 3. modele man + cosine similarity + k means
-    # 4. modele man + cosine similarity + ye model dige ke train mishe
-    # 5. model man + mean squared similarity + k means
-    # 6. model man + mean squared similarity  + ye model dige ke trian mishe
-    # TODO negah andakhtan be chizai ke too variable log_dir save shode
-    # TODO negah andakhtan be sorat converg kardan har model
     gen_feat = np.zeros([0, param.X_dim])
     gen_labels = np.zeros([0])
     for i in range(dataset.test_cls_num):
@@ -542,13 +521,6 @@ def calc_gradient_penalty(netD, real_data, fake_data):
 
 if __name__ == "__main__":
     # Inference
-    """
-    Values of Cross-validation CIZSL loss weight (Sharma-Entropy)
-    CUB-EASY: 0.0001
-    CUB-HARD: 0.1
-    NAB-EASY: 1
-    NAB-HARD: 0.1
-    """
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
     torch.cuda.manual_seed_all(opt.manualSeed)
