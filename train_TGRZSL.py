@@ -26,42 +26,23 @@ import sys
 from tqdm import tqdm
 
 from dataset import FeatDataLayer, LoadDataset, LoadDataset_NAB
-from models import _netD, _netG, _param
+from models import _netD, _netG, _netT, _classifier, _param
 
 parser = argparse.ArgumentParser()
 
-"""
-  Values of Cross-validation CIZSL loss weight (Sharma-Entropy)
-  CUB-EASY: 0.0001
-  CUB-HARD: 0.1
-  NAB-EASY: 1
-  NAB-HARD: 0.1
-"""
-
 parser.add_argument('--dataset', type=str, help='dataset to be used: CUB/NAB', default='NAB')
 parser.add_argument('--splitmode', type=str, help='the way to split train/test data: easy/hard', default='hard')
-parser.add_argument('--model_number', type=int, help='Model-Number: 1 for KL, 2 for Sharma-Entropy, 3 for Bachatera,'
-                                                     '4 for Tsallis, 5 for Renyi, 6 K+1 Classification', default=2)
+parser.add_argument('--model_number', type=int, help='Model-Number: 1 for cosine similarity and 2 MSE,', default=1)
 parser.add_argument('--exp_name', default='Reproduce', type=str, help='Experiment Name')
 parser.add_argument('--main_dir', default='./', type=str,
                     help='Main Directory including data folder')
 
-parser.add_argument('--creativity_weight', type=float, default=0.1, help='Weight of CIZSL loss- '
-                                                                         'Varies by Dataset & SplitMode- '
-                                                                         'Best values are in main function - '
-                                                                         'Can be obtained by running cross-validation')
-parser.add_argument('--validate', default=0, type=int, help='1 to validate and find best creativity weight, '
-                                                             'otherwise use --creativity_weight')
-
-parser.add_argument('--SM_Alpha', default='0.5', type=float, help='alpha weight of SM divergence')
-parser.add_argument('--SM_Beta', default='0.9999', type=float, help='beta weight of SM divergence')
 parser.add_argument('--gpu', default='0', type=str, help='index of GPU to use')
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--resume', type=str, help='the model to resume')
 parser.add_argument('--disp_interval', type=int, default=20)
 parser.add_argument('--save_interval', type=int, default=200)
-parser.add_argument('--evl_interval', type=int, default=10)  
-# You might change the eval_interval to a higher value if wants to train the model faster, but not evaluate it at each step.
+parser.add_argument('--evl_interval', type=int, default=100)  
 
 opt = parser.parse_args()
 print(opt)
@@ -127,7 +108,7 @@ class Scale(nn.Module):
             out = layer(out)
         return out
 
-def train(creative_weight=1000, model_num=1, is_val=True):
+def train(model_num=1, is_val=True):
     param = _param()
     if opt.dataset == 'CUB':
         dataset = LoadDataset(opt, main_dir, is_val)
@@ -139,7 +120,6 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         print('No Dataset with that name')
         sys.exit(0)
     param.X_dim = dataset.feature_dim
-    opt.Creative_weight = creative_weight
 
     data_layer = FeatDataLayer(dataset.labels_train, dataset.pfc_feat_data_train, opt)
     result = Result()
@@ -149,20 +129,18 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
     netG = _netG(dataset.text_dim, dataset.feature_dim).cuda()
     netG.apply(weights_init)
-    if model_num == 6:
-        netD = _netD(dataset.train_cls_num + 1, dataset.feature_dim).cuda()
-    else:
-        netD = _netD(dataset.train_cls_num, dataset.feature_dim).cuda()
+    netT = _netT(dataset.train_cls_num , dataset.feature_dim, dataset.text_dim).cuda()
+    netT.apply(weights_init)
+    netD = _netD(dataset.train_cls_num, dataset.feature_dim).cuda()
     netD.apply(weights_init)
 
-    if model_num == 2:
-        log_SM_ab = Scale(2)
-        log_SM_ab = nn.DataParallel(log_SM_ab).cuda()
-    elif model_num == 4 or model_num == 5:
-        log_SM_ab = Scale(1)
-        log_SM_ab = nn.DataParallel(log_SM_ab).cuda()
+    similarity_func = None
+    if model_num == 1:
+        similarity_func = F.cosine_similarity
+    elif model_num == 2:
+        similarity_func = F.mse_loss
 
-    exp_params = 'Model_{}_CAN{}_Eu{}_Rls{}_RWz{}_{}'.format(model_num, opt.Creative_weight, opt.CENT_LAMBDA,
+    exp_params = 'Model_{}_Eu{}_Rls{}_RWz{}_{}'.format(model_num, opt.CENT_LAMBDA,
                                                              opt.REG_W_LAMBDA, opt.REG_Wz_LAMBDA, opt.exp_name)
 
     out_subdir = main_dir + 'out/{:s}/{:s}'.format(exp_info, exp_params)
@@ -170,6 +148,7 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         os.makedirs(out_subdir)
 
     log_dir = out_subdir + '/log_{:s}.txt'.format(exp_info)
+    log_dir_2 = out_subdir + '/log_{:s}_iterations.txt'.format(exp_info)
     with open(log_dir, 'a') as f:
         f.write('Training Start:')
         f.write(strftime("%a, %d %b %Y %H:%M:%S +0000", gmtime()) + '\n')
@@ -182,24 +161,20 @@ def train(creative_weight=1000, model_num=1, is_val=True):
             checkpoint = torch.load(opt.resume)
             netG.load_state_dict(checkpoint['state_dict_G'])
             netD.load_state_dict(checkpoint['state_dict_D'])
+            netT.load_state_dict(checkpoint['state_dict_T'])
             start_step = checkpoint['it']
             print(checkpoint['log'])
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
-    if model_num == 2 or model_num == 4 or model_num == 5:
-        nets = [netG, netD, log_SM_ab]
-    else:
-        nets = [netG, netD]
+    nets = [netG, netD, netT]
 
     tr_cls_centroid = Variable(torch.from_numpy(dataset.tr_cls_centroid.astype('float32'))).cuda()
     optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(0.5, 0.9))
+    optimizerT = optim.Adam(netT.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(0.5, 0.9))
-    if model_num == 2 or model_num == 4 or model_num == 5:
-        optimizer_SM_ab = optim.Adam(log_SM_ab.parameters(), lr=opt.lr, betas=(0.5, 0.999))
 
     for it in tqdm(range(start_step, 3000 + 1)):
-        # Creative Loss
         blobs = data_layer.forward()
         labels = blobs['labels'].astype(int)
         new_class_labels = Variable(
@@ -216,7 +191,40 @@ def train(creative_weight=1000, model_num=1, is_val=True):
         text_feat_mean = normalize(text_feat_mean, norm='l2', axis=1)
         text_feat_Creative = Variable(torch.from_numpy(text_feat_mean.astype('float32'))).cuda()
         z_creative = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
-        G_creative_sample = netG(z_creative, text_feat_Creative)
+      
+
+        """ Text Feat Generator """
+        for _ in range(5):
+            blobs = data_layer.forward()
+            feat_data = blobs['data']  # image data
+            labels = blobs['labels'].astype(int)  # class labels
+
+            text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
+            text_feat_TG = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
+            X = Variable(torch.from_numpy(feat_data)).cuda()
+            y_true = Variable(torch.from_numpy(labels.astype('int'))).cuda()
+            z = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
+
+            # GAN's T loss
+            T_real = netT(X)
+            T_loss_real = torch.mean(similarity_func(text_feat_TG, T_real))
+
+            # GAN's T loss
+            G_sample = netG(z, text_feat_TG).detach()
+            T_fake_TG = netT(G_sample)
+            T_loss_fake = torch.mean(similarity_func(text_feat_TG, T_fake_TG))
+
+            # GAN's T loss
+            G_sample_creative = netG(z, text_feat_Creative).detach()
+            T_fake_creative_TG = netT(G_sample_creative)
+            T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG))
+
+            T_loss = -1 * T_loss_real - T_loss_fake -T_loss_fake_creative
+            T_loss.backward()
+
+            optimizerT.step()
+            optimizerG.step()
+            reset_grad(nets)
 
         """ Discriminator """
         for _ in range(5):
@@ -268,14 +276,24 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
             G_sample = netG(z, text_feat)
             D_fake, C_fake = netD(G_sample)
+            T_fake = netT(G_sample)
             _, C_real = netD(X)
 
             # GAN's G loss
             G_loss = torch.mean(D_fake)
+            T_loss_fake = torch.mean(similarity_func(text_feat, T_fake))
             # Auxiliary classification loss
             C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
 
-            GC_loss = -G_loss + C_loss
+            # GAN's G loss creative
+            G_sample_creative = netG(z, text_feat_Creative).detach()
+            T_fake_creative = netT(G_sample_creative)
+            T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative))
+            D_creative_fake, _ = netD(G_sample_creative)
+            G_loss_fake_creative = torch.mean(D_creative_fake)
+
+
+            GC_loss = -G_loss - G_loss_fake_creative + C_loss - T_loss_fake - T_loss_fake_creative
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
@@ -304,73 +322,11 @@ def train(creative_weight=1000, model_num=1, is_val=True):
                 reg_Wz_loss = Wz.pow(2).sum(dim=0).sqrt().sum().mul(opt.REG_Wz_LAMBDA)
 
             # D(C| GX_fake)) + Classify GX_fake as real
-            D_creative_fake, C_creative_fake = netD(G_creative_sample)
-            if model_num == 1:  # KL Divergence
-                G_fake_C = F.log_softmax(C_creative_fake)
-            else:
-                G_fake_C = F.softmax(C_creative_fake)
+           
 
-            if model_num == 1:  # KL Divergence
-                entropy_GX_fake = (G_fake_C / G_fake_C.data.size(1)).mean()
-            elif model_num == 2:  # SM Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = 0.2 + torch.div(SM_ab[0][1], 1.6666666666666667).cuda()
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 3:  # Bachatera Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-                SM_a = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_a.data.fill_(opt.SM_Alpha)
-                SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_b.data.fill_(opt.SM_Alpha)
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 4:  # Tsallis Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = SM_a
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-            elif model_num == 5:  # Renyi Divergence
-                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
-                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
-
-                SM_ab = F.sigmoid(log_SM_ab(ones))
-                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
-                SM_b = Variable(torch.FloatTensor(1, 1)).cuda()
-                SM_b.data.fill_(opt.SM_Beta)
-                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
-                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
-                entropy_GX_fake_vec = -torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
-
-            if model_num == 6:
-                loss_creative = F.cross_entropy(C_creative_fake, new_class_labels)
-            else:
-                if model_num != 1:
-                    # Normalize SM-Divergence & Report mean
-                    min_e, max_e = torch.min(entropy_GX_fake_vec), torch.max(entropy_GX_fake_vec)
-                    entropy_GX_fake_vec = (entropy_GX_fake_vec - min_e) / (max_e - min_e)
-                    entropy_GX_fake = -entropy_GX_fake_vec.mean()
-                loss_creative = -opt.Creative_weight * entropy_GX_fake
-
-            disc_GX_fake_real = -torch.mean(D_creative_fake)
-            total_loss_creative = loss_creative + disc_GX_fake_real
-
-            all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss + total_loss_creative
+            all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss 
             all_loss.backward()
-            if model_num == 2 or model_num == 4 or model_num == 5:
-                optimizer_SM_ab.step()
+            
             optimizerG.step()
             reset_grad(nets)
 
@@ -386,27 +342,33 @@ def train(creative_weight=1000, model_num=1, is_val=True):
 
         if it % opt.evl_interval == 0 and it > opt.disp_interval:
             netG.eval()
-            cur_acc = eval_fakefeat_test(it, netG, dataset, param, result)
+            cur_acc, cur_nn_acc = eval_fakefeat_test(it, netG, dataset, param, result)
             cur_auc = eval_fakefeat_GZSL(netG, dataset, param, out_subdir, result)
-            
+
             if cur_acc > result.best_acc:
               result.best_acc = cur_acc
+
+            if cur_nn_acc > result.best_nn_acc:
+                result.best_nn_acc = cur_nn_acc
 
             if cur_auc > result.best_auc:
                 result.best_auc = cur_auc
 
-                if it % opt.save_interval:
-                    files2remove = glob.glob(out_subdir + '/Best_model*')
-                    for _i in files2remove:
-                        os.remove(_i)
-                    torch.save({
-                        'it': it + 1,
-                        'state_dict_G': netG.state_dict(),
-                        'state_dict_D': netD.state_dict(),
-                        'random_seed': opt.manualSeed,
-                        'log': log_text,
-                    }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
+                files2remove = glob.glob(out_subdir + '/Best_model*')
+                for _i in files2remove:
+                    os.remove(_i)
+                torch.save({
+                    'it': it + 1,
+                    'state_dict_G': netG.state_dict(),
+                    'state_dict_D': netD.state_dict(),
+                    'state_dict_T': netT.state_dict(),
+                    'random_seed': opt.manualSeed,
+                    'log': log_text,
+                }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
 
+            log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean(similarity_func(text_feat_TG, T_real)).data), float(torch.mean(similarity_func(text_feat_TG, T_fake_TG)).data), float(torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG)).data))
+            with open(log_dir_2, 'a') as f:
+                f.write(log_text_2 + '\n')
             netG.train()
     return result
 
@@ -457,15 +419,41 @@ def eval_fakefeat_GZSL(netG, dataset, param, plot_dir, result):
     result.auc_list += [auc_score]
     return auc_score
 
+def train_classifier(train_data, train_label, test_data, test_label, num_class):
+    classifier = _classifier(train_data.shape[1], num_class).cuda()
+    classifier.apply(weights_init)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(classifier.parameters(), lr=0.01, betas=(0.5, 0.9))
+
+    for epoch in range(50):
+        optimizer.zero_grad()
+
+        # forward + backward + optimize
+        X = Variable(torch.from_numpy(train_data)).cuda().type(torch.cuda.FloatTensor)
+        y = Variable(torch.from_numpy(train_label)).cuda().type(torch.cuda.LongTensor) 
+
+        outputs = classifier(X)
+        loss = criterion(outputs, y)
+        loss.backward()
+        optimizer.step()
+
+    X_test = Variable(torch.from_numpy(test_data)).cuda().type(torch.cuda.FloatTensor)
+    outputs = classifier(X_test)
+    acc = (np.asarray(torch.argmax(outputs, 1)) == test_label).mean() * 100
+    return acc
 
 def eval_fakefeat_test(it, netG, dataset, param, result):
     gen_feat = np.zeros([0, param.X_dim])
+    gen_labels = np.zeros([0])
     for i in range(dataset.test_cls_num):
         text_feat = np.tile(dataset.test_text_feature[i].astype('float32'), (opt.nSample, 1))
         text_feat = Variable(torch.from_numpy(text_feat)).cuda()
         z = Variable(torch.randn(opt.nSample, param.z_dim)).cuda()
         G_sample = netG(z, text_feat)
         gen_feat = np.vstack((gen_feat, G_sample.data.cpu().numpy()))
+
+        labels = np.tile(i, (opt.nSample))
+        gen_labels = np.hstack((gen_labels, labels))
 
     # cosince predict K-nearest Neighbor
     sim = cosine_similarity(dataset.pfc_feat_data_test, gen_feat)
@@ -480,13 +468,15 @@ def eval_fakefeat_test(it, netG, dataset, param, result):
     label_T = np.asarray(dataset.labels_test)
     acc = (preds == label_T).mean() * 100
 
+    nn_acc = train_classifier(gen_feat, gen_labels, dataset.pfc_feat_data_test, label_T, dataset.test_cls_num)
     result.acc_list += [acc]
-    return acc
+    return acc, nn_acc
 
 
 class Result(object):
     def __init__(self):
         self.best_acc = 0.0
+        self.best_nn_acc = 0.0
         self.best_auc = 0.0
         self.best_iter = 0.0
         self.acc_list = []
@@ -529,43 +519,13 @@ def calc_gradient_penalty(netD, real_data, fake_data):
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * opt.GP_LAMBDA
     return gradient_penalty
 
-
-def return_best_creativity_weight_validation(creative_weights=[0.0001, 0.001, 0.1, 1, 10, 100, 1000]):
-    # Validation
-    max_acc, best_w = -1, 1
-    for cr_w in creative_weights:
-        print("{:s} - {:s}".format(opt.dataset, opt.splitmode))
-        print("{} - {}".format(cr_w, opt.model_number))
-        print('*' * 10)
-        random.seed(opt.manualSeed)
-        torch.manual_seed(opt.manualSeed)
-        torch.cuda.manual_seed_all(opt.manualSeed)
-        result = train(cr_w, opt.model_number, is_val=False)
-        if result.best_auc > max_acc:
-            max_acc = result.best_auc
-            max_res = result
-            best_w = cr_w
-
-    return best_w, max_res
-
-
 if __name__ == "__main__":
     # Inference
-    """
-    Values of Cross-validation CIZSL loss weight (Sharma-Entropy)
-    CUB-EASY: 0.0001
-    CUB-HARD: 0.1
-    NAB-EASY: 1
-    NAB-HARD: 0.1
-    """
-    cr_weight = opt.creativity_weight
-    if opt.validate == 1:
-        cr_weight, _ = return_best_creativity_weight_validation()
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
     torch.cuda.manual_seed_all(opt.manualSeed)
-    result = train(cr_weight, opt.model_number, is_val=False)
+    result = train(opt.model_number, is_val=False)
     print('=' * 15)
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
-    print("Accuracy is {:.4}%, and Generalized AUC is {:.4}%".format(result.best_acc, result.best_auc))
+    print("Accuracy is {:.4}%, NN Accuracy is {:.4}%, and Generalized AUC is {:.4}%".format(result.best_acc, result.best_nn_acc, result.best_auc))

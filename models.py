@@ -45,3 +45,24 @@ class _netD(nn.Module):
         h = self.D_shared(input)
         return self.D_gan(h), self.D_aux(h)
 
+class _netT(nn.Module):
+    def __init__(self, y_dim=150, X_dim=3584, text_dim=7551):
+        super(_netT, self).__init__()
+        self.T_layer = nn.Sequential(nn.Linear(X_dim, h_dim),
+                                     nn.ReLU(),
+                                     nn.Linear(h_dim, text_dim))
+    
+    def forward(self, input):
+        return self.T_layer(input)
+
+class _classifier(nn.Module):
+    def __init__(self, input_dim=3584, out_dim=50):
+        super(_classifier, self).__init__()
+        self.classifier = nn.Sequential(nn.Linear(input_dim, int(input_dim / 2)),
+                                        nn.ReLU(),
+                                        nn.Linear(int(input_dim / 2), int(input_dim / 10)),
+                                        nn.ReLU(),
+                                        nn.Linear(int(input_dim/ 10), out_dim))
+
+    def forward(self, x):
+        return self.classifier(x)
