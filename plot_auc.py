@@ -23,7 +23,7 @@ paths = {
 
 }
 
-legend = ["my model", "CIZSL", "GAZSL"]
+legend = ["Our Model", "CIZSL", "GAZSL"]
 titles = ['CUB easy split', 'CUB hard split', 'NAB easy split', 'NAB hard split']
 fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
 axs = [ax1, ax2, ax3, ax4]
