@@ -36,6 +36,10 @@ parser.add_argument('--model_number', type=int, help='Model-Number: 1 for cosine
 parser.add_argument('--exp_name', default='Reproduce', type=str, help='Experiment Name')
 parser.add_argument('--main_dir', default='./', type=str,
                     help='Main Directory including data folder')
+parser.add_argument('--creativity_weight', type=float, default=None, help='Weight of CIZSL loss- '
+                                                                         'Varies by Dataset & SplitMode- '
+                                                                         'Best values are in main function - '
+                                                                         'Can be obtained by running cross-validation')
 
 parser.add_argument('--gpu', default='0', type=str, help='index of GPU to use')
 parser.add_argument('--manualSeed', type=int, help='manual seed')
@@ -108,7 +112,7 @@ class Scale(nn.Module):
             out = layer(out)
         return out
 
-def train(model_num=1, is_val=True):
+def train(model_num=1, is_val=True, creative_weight=None):
     param = _param()
     if opt.dataset == 'CUB':
         dataset = LoadDataset(opt, main_dir, is_val)
@@ -133,6 +137,10 @@ def train(model_num=1, is_val=True):
     netT.apply(weights_init)
     netD = _netD(dataset.train_cls_num, dataset.feature_dim).cuda()
     netD.apply(weights_init)
+
+    if creative_weight is not None:
+        log_SM_ab = Scale(2)
+        log_SM_ab = nn.DataParallel(log_SM_ab).cuda()
 
     similarity_func = None
     if model_num == 1:
@@ -167,12 +175,18 @@ def train(model_num=1, is_val=True):
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
-    nets = [netG, netD, netT]
+    if creative_weight is not None:
+        nets = [netG, netD, netT, log_SM_ab]
+    else:
+        nets = [netG, netD, netT]
 
     tr_cls_centroid = Variable(torch.from_numpy(dataset.tr_cls_centroid.astype('float32'))).cuda()
     optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerT = optim.Adam(netT.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(0.5, 0.9))
+
+    if creative_weight is not None:
+        optimizer_SM_ab = optim.Adam(log_SM_ab.parameters(), lr=opt.lr, betas=(0.5, 0.999))
 
     for it in tqdm(range(start_step, 3000 + 1)):
         blobs = data_layer.forward()
@@ -190,8 +204,8 @@ def train(model_num=1, is_val=True):
         text_feat_mean = text_feat_mean.transpose()
         text_feat_mean = normalize(text_feat_mean, norm='l2', axis=1)
         text_feat_Creative = Variable(torch.from_numpy(text_feat_mean.astype('float32'))).cuda()
-        z_creative = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
-      
+        # z_creative = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
+        # G_creative_sample = netG(z_creative, text_feat_Creative)
 
         """ Text Feat Generator """
         for _ in range(5):
@@ -321,12 +335,38 @@ def train(model_num=1, is_val=True):
                 Wz = netG.rdc_text.weight
                 reg_Wz_loss = Wz.pow(2).sum(dim=0).sqrt().sum().mul(opt.REG_Wz_LAMBDA)
 
-            # D(C| GX_fake)) + Classify GX_fake as real
-           
 
-            all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss 
+            if creative_weight is not None:
+                # D(C| GX_fake)) + Classify GX_fake as real
+                D_creative_fake, C_creative_fake = netD(G_sample_creative)
+                G_fake_C = F.softmax(C_creative_fake)
+                # SM Divergence
+                q_shape = Variable(torch.FloatTensor(G_fake_C.data.size(0), G_fake_C.data.size(1))).cuda()
+                q_shape.data.fill_(1.0 / G_fake_C.data.size(1))
+
+                SM_ab = F.sigmoid(log_SM_ab(ones))
+                SM_a = 0.2 + torch.div(SM_ab[0][0], 1.6666666666666667).cuda()
+                SM_b = 0.2 + torch.div(SM_ab[0][1], 1.6666666666666667).cuda()
+                pow_a_b = torch.div(1 - SM_a, 1 - SM_b)
+                alpha_term = (torch.pow(G_fake_C + 1e-5, SM_a) * torch.pow(q_shape, 1 - SM_a)).sum(1)
+                entropy_GX_fake_vec = torch.div(torch.pow(alpha_term, pow_a_b) - 1, SM_b - 1)
+
+                min_e, max_e = torch.min(entropy_GX_fake_vec), torch.max(entropy_GX_fake_vec)
+                entropy_GX_fake_vec = (entropy_GX_fake_vec - min_e) / (max_e - min_e)
+                entropy_GX_fake = -entropy_GX_fake_vec.mean()
+                loss_creative = -creative_weight * entropy_GX_fake
+
+                disc_GX_fake_real = -torch.mean(D_creative_fake)
+                total_loss_creative = loss_creative + disc_GX_fake_real
+
+                all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss + total_loss_creative
+            else:
+                all_loss = GC_loss + Euclidean_loss + reg_loss + reg_Wz_loss
+
             all_loss.backward()
             
+            if creative_weight is not None:
+                optimizer_SM_ab.step()
             optimizerG.step()
             reset_grad(nets)
 
@@ -524,7 +564,7 @@ if __name__ == "__main__":
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
     torch.cuda.manual_seed_all(opt.manualSeed)
-    result = train(opt.model_number, is_val=False)
+    result = train(opt.model_number, is_val=False, creative_weight=opt.creativity_weight)
     print('=' * 15)
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
