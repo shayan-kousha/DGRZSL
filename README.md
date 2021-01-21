@@ -1,5 +1,5 @@
 # TGRZSL
-Text Generator Regularizer Zero-Shot Learning
+[Text Generator Regularizer Zero-Shot Learning](https://github.com/shayan-kousha/TGRZSL/blob/master/Report.pdf)
 
 Please contact me at koushashayan@gmail.com for questions.  
 
@@ -13,7 +13,7 @@ sklearn, scipy, matplotlib, numpy, random, copy
 
 # How to run?
 
-Data: download the [dataset CUBird and NABird](https://www.dropbox.com/s/9qovr86kgogkl6r/CUB_NAB_Data.zip
+Data: download the [dataset CUBird and NABird](https://www.dropbox.com/s/9qovr86kgogkl6r/CUB_NAB_Data.zip)
 
 Please put the uncompressed data to the folder "data"
 
