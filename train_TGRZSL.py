@@ -30,9 +30,11 @@ from models import _netD, _netG, _netT, _classifier, _param
 
 parser = argparse.ArgumentParser()
 
+parser.add_argument('--model_number', type=int,
+                    help='Model-Number: 1 for GAZSL, 2 for CIZSL, 3 for TGRZSL and 4 for CIZSL + TGRZSL ', default=1)
 parser.add_argument('--dataset', type=str, help='dataset to be used: CUB/NAB', default='NAB')
 parser.add_argument('--splitmode', type=str, help='the way to split train/test data: easy/hard', default='hard')
-parser.add_argument('--model_number', type=int, help='Model-Number: 1 for cosine similarity and 2 MSE,', default=1)
+parser.add_argument('--sim_func_number', type=int, help='Model-Number: 1 for cosine similarity and 2 MSE,', default=1)
 parser.add_argument('--exp_name', default='Reproduce', type=str, help='Experiment Name')
 parser.add_argument('--main_dir', default='./', type=str,
                     help='Main Directory including data folder')
@@ -112,7 +114,7 @@ class Scale(nn.Module):
             out = layer(out)
         return out
 
-def train(model_num=1, is_val=True, creative_weight=None):
+def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
     param = _param()
     if opt.dataset == 'CUB':
         dataset = LoadDataset(opt, main_dir, is_val)
@@ -133,23 +135,24 @@ def train(model_num=1, is_val=True, creative_weight=None):
 
     netG = _netG(dataset.text_dim, dataset.feature_dim).cuda()
     netG.apply(weights_init)
-    netT = _netT(dataset.train_cls_num , dataset.feature_dim, dataset.text_dim).cuda()
-    netT.apply(weights_init)
     netD = _netD(dataset.train_cls_num, dataset.feature_dim).cuda()
     netD.apply(weights_init)
 
-    if creative_weight is not None:
+    if model_num == 2 or model_num == 4:
         log_SM_ab = Scale(2)
         log_SM_ab = nn.DataParallel(log_SM_ab).cuda()
+    if model_num == 3 or model_num == 4:
+        netT = _netT(dataset.train_cls_num , dataset.feature_dim, dataset.text_dim).cuda()
+        netT.apply(weights_init)
 
     similarity_func = None
-    if model_num == 1:
+    if sim_func_number == 1:
         similarity_func = F.cosine_similarity
-    elif model_num == 2:
+    elif sim_func_number == 2:
         similarity_func = F.mse_loss
 
-    exp_params = 'Model_{}_Eu{}_Rls{}_RWz{}_{}'.format(model_num, opt.CENT_LAMBDA,
-                                                             opt.REG_W_LAMBDA, opt.REG_Wz_LAMBDA, opt.exp_name)
+    exp_params = 'Model_{}_is_val_{}_sim_func_number_{}_creative_weight_{}_{}'.format(
+        model_num, is_val, sim_func_number, creative_weight, opt.exp_name)
 
     out_subdir = main_dir + 'out/{:s}/{:s}'.format(exp_info, exp_params)
     if not os.path.exists(out_subdir):
@@ -169,24 +172,31 @@ def train(model_num=1, is_val=True, creative_weight=None):
             checkpoint = torch.load(opt.resume)
             netG.load_state_dict(checkpoint['state_dict_G'])
             netD.load_state_dict(checkpoint['state_dict_D'])
-            netT.load_state_dict(checkpoint['state_dict_T'])
+            if model_num == 3 or model_num == 4:
+                netT.load_state_dict(checkpoint['state_dict_T'])
             start_step = checkpoint['it']
             print(checkpoint['log'])
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
-    if creative_weight is not None:
-        nets = [netG, netD, netT, log_SM_ab]
-    else:
+    if model_num == 1:
+        nets = [netG, netD]
+    elif model_num == 2:
+        nets = [netG, netD, log_SM_ab]
+    elif model_num == 3:
         nets = [netG, netD, netT]
+    elif model_num == 4:
+        nets = [netG, netD, netT, log_SM_ab]
+
 
     tr_cls_centroid = Variable(torch.from_numpy(dataset.tr_cls_centroid.astype('float32'))).cuda()
     optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(0.5, 0.9))
-    optimizerT = optim.Adam(netT.parameters(), lr=opt.lr, betas=(0.5, 0.9))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(0.5, 0.9))
 
-    if creative_weight is not None:
+    if model_num == 2 or model_num == 4:
         optimizer_SM_ab = optim.Adam(log_SM_ab.parameters(), lr=opt.lr, betas=(0.5, 0.999))
+    if model_num == 3 or model_num == 4:
+        optimizerT = optim.Adam(netT.parameters(), lr=opt.lr, betas=(0.5, 0.9))
 
     for it in tqdm(range(start_step, 3000 + 1)):
         blobs = data_layer.forward()
@@ -207,38 +217,39 @@ def train(model_num=1, is_val=True, creative_weight=None):
         # z_creative = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
         # G_creative_sample = netG(z_creative, text_feat_Creative)
 
-        """ Text Feat Generator """
-        for _ in range(5):
-            blobs = data_layer.forward()
-            feat_data = blobs['data']  # image data
-            labels = blobs['labels'].astype(int)  # class labels
+        if model_num == 3 or model_num == 4:
+            """ Text Feat Generator """
+            for _ in range(5):
+                blobs = data_layer.forward()
+                feat_data = blobs['data']  # image data
+                labels = blobs['labels'].astype(int)  # class labels
 
-            text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
-            text_feat_TG = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
-            X = Variable(torch.from_numpy(feat_data)).cuda()
-            y_true = Variable(torch.from_numpy(labels.astype('int'))).cuda()
-            z = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
+                text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
+                text_feat_TG = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
+                X = Variable(torch.from_numpy(feat_data)).cuda()
+                y_true = Variable(torch.from_numpy(labels.astype('int'))).cuda()
+                z = Variable(torch.randn(opt.batchsize, param.z_dim)).cuda()
 
-            # GAN's T loss
-            T_real = netT(X)
-            T_loss_real = torch.mean(similarity_func(text_feat_TG, T_real))
+                # GAN's T loss
+                T_real = netT(X)
+                T_loss_real = torch.mean(similarity_func(text_feat_TG, T_real))
 
-            # GAN's T loss
-            G_sample = netG(z, text_feat_TG).detach()
-            T_fake_TG = netT(G_sample)
-            T_loss_fake = torch.mean(similarity_func(text_feat_TG, T_fake_TG))
+                # GAN's T loss
+                G_sample = netG(z, text_feat_TG).detach()
+                T_fake_TG = netT(G_sample)
+                T_loss_fake = torch.mean(similarity_func(text_feat_TG, T_fake_TG))
 
-            # GAN's T loss
-            G_sample_creative = netG(z, text_feat_Creative).detach()
-            T_fake_creative_TG = netT(G_sample_creative)
-            T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG))
+                # GAN's T loss
+                G_sample_creative = netG(z, text_feat_Creative).detach()
+                T_fake_creative_TG = netT(G_sample_creative)
+                T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG))
 
-            T_loss = -1 * T_loss_real - T_loss_fake -T_loss_fake_creative
-            T_loss.backward()
+                T_loss = -1 * T_loss_real - T_loss_fake -T_loss_fake_creative
+                T_loss.backward()
 
-            optimizerT.step()
-            optimizerG.step()
-            reset_grad(nets)
+                optimizerT.step()
+                optimizerG.step()
+                reset_grad(nets)
 
         """ Discriminator """
         for _ in range(5):
@@ -290,24 +301,28 @@ def train(model_num=1, is_val=True, creative_weight=None):
 
             G_sample = netG(z, text_feat)
             D_fake, C_fake = netD(G_sample)
-            T_fake = netT(G_sample)
             _, C_real = netD(X)
 
             # GAN's G loss
             G_loss = torch.mean(D_fake)
-            T_loss_fake = torch.mean(similarity_func(text_feat, T_fake))
             # Auxiliary classification loss
             C_loss = (F.cross_entropy(C_real, y_true) + F.cross_entropy(C_fake, y_true)) / 2
 
             # GAN's G loss creative
             G_sample_creative = netG(z, text_feat_Creative).detach()
-            T_fake_creative = netT(G_sample_creative)
-            T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative))
             D_creative_fake, _ = netD(G_sample_creative)
             G_loss_fake_creative = torch.mean(D_creative_fake)
 
+            if model_num == 3 or model_num == 4:
+                T_fake = netT(G_sample)
+                T_loss_fake = torch.mean(similarity_func(text_feat, T_fake))
 
-            GC_loss = -G_loss - G_loss_fake_creative + C_loss - T_loss_fake - T_loss_fake_creative
+                T_fake_creative = netT(G_sample_creative)
+                T_loss_fake_creative = torch.mean(similarity_func(text_feat_Creative, T_fake_creative))
+
+                GC_loss = -G_loss - G_loss_fake_creative + C_loss - T_loss_fake - T_loss_fake_creative
+            else:
+                GC_loss = -G_loss - G_loss_fake_creative + C_loss
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
@@ -336,7 +351,7 @@ def train(model_num=1, is_val=True, creative_weight=None):
                 reg_Wz_loss = Wz.pow(2).sum(dim=0).sqrt().sum().mul(opt.REG_Wz_LAMBDA)
 
 
-            if creative_weight is not None:
+            if model_num == 2 or model_num == 4:
                 # D(C| GX_fake)) + Classify GX_fake as real
                 D_creative_fake, C_creative_fake = netD(G_sample_creative)
                 G_fake_C = F.softmax(C_creative_fake)
@@ -365,7 +380,7 @@ def train(model_num=1, is_val=True, creative_weight=None):
 
             all_loss.backward()
             
-            if creative_weight is not None:
+            if model_num == 2 or model_num == 4:
                 optimizer_SM_ab.step()
             optimizerG.step()
             reset_grad(nets)
@@ -397,16 +412,27 @@ def train(model_num=1, is_val=True, creative_weight=None):
                 files2remove = glob.glob(out_subdir + '/Best_model*')
                 for _i in files2remove:
                     os.remove(_i)
-                torch.save({
+
+                save_dict = {
                     'it': it + 1,
                     'state_dict_G': netG.state_dict(),
                     'state_dict_D': netD.state_dict(),
-                    'state_dict_T': netT.state_dict(),
                     'random_seed': opt.manualSeed,
                     'log': log_text,
-                }, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
+                }
 
-            log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean(similarity_func(text_feat_TG, T_real)).data), float(torch.mean(similarity_func(text_feat_TG, T_fake_TG)).data), float(torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG)).data))
+                if model_num == 3 or model_num == 4:
+                    save_dict.update({
+                    'state_dict_T': netT.state_dict()
+                    })
+                torch.save(save_dict, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
+
+            # log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, 
+            # fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean
+            # (similarity_func(text_feat_TG, T_real)).data), float(torch.mean(similarity_func(text_feat_TG, T_fake_TG))
+            # .data), float(torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG)).data))
+            log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f' % (
+                it, result.best_acc, result.best_nn_acc, result.best_auc)
             with open(log_dir_2, 'a') as f:
                 f.write(log_text_2 + '\n')
             netG.train()
@@ -564,8 +590,32 @@ if __name__ == "__main__":
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
     torch.cuda.manual_seed_all(opt.manualSeed)
-    result = train(opt.model_number, is_val=False, creative_weight=opt.creativity_weight)
+
+    if opt.model_number == 1:
+        result = train(model_num=opt.model_number, is_val=False)
+    elif opt.model_number == 2:
+        assert opt.creativity_weight is not None
+        result = train(model_num=opt.model_number, is_val=False, creative_weight=opt.creativity_weight)
+    elif opt.model_number == 3:
+        assert opt.sim_func_number is not None
+        result = train(model_num=opt.model_number, is_val=False, sim_func_number=opt.sim_func_number)
+    elif opt.model_number == 4:
+        assert opt.creativity_weight is not None
+        assert opt.sim_func_number is not None
+        result = train(
+            model_num=opt.model_number,
+            is_val=False,
+            creative_weight=opt.creativity_weight,
+            sim_func_number=opt.sim_func_number
+        )
+    else:
+        print('model number is invalid')
+
+    
     print('=' * 15)
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
-    print("Accuracy is {:.4}%, NN Accuracy is {:.4}%, and Generalized AUC is {:.4}%".format(result.best_acc, result.best_nn_acc, result.best_auc))
+    print(
+        "Accuracy is {:.4}%, NN Accuracy is {:.4}%, and Generalized AUC is {:.4}%"
+        .format(result.best_acc, result.best_nn_acc, result.best_auc)
+    )
