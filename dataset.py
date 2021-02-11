@@ -13,8 +13,9 @@ class LoadDataset(object):
             pfc_feat_path_train = main_dir + 'data/CUB2011/pfc_feat_train.mat'
             pfc_feat_path_test = main_dir + 'data/CUB2011/pfc_feat_test.mat'
             if is_val:
-                train_cls_num = 120
-                test_cls_num = 30
+                train_cls_num = 150
+                val_cls_num = 10
+                test_cls_num = 40
             else:
                 train_cls_num = 150
                 test_cls_num = 50
@@ -25,25 +26,29 @@ class LoadDataset(object):
             pfc_feat_path_train = main_dir + 'data/CUB2011/pfc_feat_train_hard.mat'
             pfc_feat_path_test = main_dir + 'data/CUB2011/pfc_feat_test_hard.mat'
             if is_val:
-                train_cls_num = 130
+                train_cls_num = 160
+                val_cls_num = 10
                 test_cls_num = 30
             else:
                 train_cls_num = 160
                 test_cls_num = 40
 
         if is_val:
-            data_features = sio.loadmat(pfc_feat_path_train)['pfc_feat'].astype(np.float32)
-            with open(pfc_label_path_train) as fout:
-                data_labels = pickle.load(fout, encoding="latin1")
+            data_features = sio.loadmat(pfc_feat_path_test)['pfc_feat'].astype(np.float32)
+            with open(pfc_label_path_test, 'rb') as fout:
+                data_labels = np.array(pickle.load(fout, encoding="latin1"))
 
-            self.pfc_feat_data_train = data_features[data_labels < train_cls_num]
-            self.pfc_feat_data_test = data_features[data_labels >= train_cls_num]
-            self.labels_train = data_labels[data_labels < train_cls_num]
-            self.labels_test = data_labels[data_labels >= train_cls_num] - train_cls_num
+            self.pfc_feat_data_test = data_features[data_labels < test_cls_num]
+            self.pfc_feat_data_val = data_features[data_labels >= test_cls_num]
+            self.pfc_feat_data_train = sio.loadmat(pfc_feat_path_train)['pfc_feat'].astype(np.float32)
+            self.labels_test = data_labels[data_labels < test_cls_num]
+            self.labels_val = data_labels[data_labels >= test_cls_num] - test_cls_num
+            with open(pfc_label_path_train, 'rb') as fout:
+                self.labels_train = pickle.load(fout, encoding="latin1")
 
-            text_features, _ = get_text_feature(txt_feat_path, train_test_split_dir)  # Z_tr, Z_te
-            self.train_text_feature, self.test_text_feature = text_features[:train_cls_num], text_features[
-                                                                                             train_cls_num:]
+            self.train_text_feature, text_features = get_text_feature(txt_feat_path, train_test_split_dir)  # Z_tr, Z_te
+            self.test_text_feature, self.val_text_feature = text_features[:test_cls_num], text_features[
+                                                                                             test_cls_num:]
             self.text_dim = self.train_text_feature.shape[1]
         else:
             self.pfc_feat_data_train = sio.loadmat(pfc_feat_path_train)['pfc_feat'].astype(np.float32)
@@ -53,7 +58,12 @@ class LoadDataset(object):
                 self.labels_train = pickle.load(fout1, encoding="latin1")
                 self.labels_test = pickle.load(fout2, encoding="latin1")
 
+            self.train_text_feature, self.test_text_feature = get_text_feature(txt_feat_path,
+                                                                               train_test_split_dir)  # Z_tr, Z_te
+            self.text_dim = self.train_text_feature.shape[1]
+
         self.train_cls_num = train_cls_num  # Y_train
+        self.val_cls_num = val_cls_num
         self.test_cls_num = test_cls_num  # Y_test
         self.feature_dim = self.pfc_feat_data_train.shape[1]
 
@@ -67,12 +77,6 @@ class LoadDataset(object):
         for i in range(self.train_cls_num):
             self.tr_cls_centroid[i] = np.mean(self.pfc_feat_data_train[self.labels_train == i], axis=0)
 
-        if not is_val:
-            self.train_text_feature, self.test_text_feature = get_text_feature(txt_feat_path,
-                                                                               train_test_split_dir)  # Z_tr, Z_te
-            self.text_dim = self.train_text_feature.shape[1]
-
-
 class LoadDataset_NAB(object):
     def __init__(self, opt, main_dir, is_val=True):
         txt_feat_path = main_dir + 'data/NABird/NAB_Porter_13217D_TFIDF_new.mat'
@@ -83,8 +87,9 @@ class LoadDataset_NAB(object):
             pfc_feat_path_train = main_dir + 'data/NABird/pfc_feat_train_easy.mat'
             pfc_feat_path_test = main_dir + 'data/NABird/pfc_feat_test_easy.mat'
             if is_val:
-                train_cls_num = 258
-                test_cls_num = 65
+                train_cls_num = 323
+                val_cls_num = 21
+                test_cls_num = 60
             else:
                 train_cls_num = 323
                 test_cls_num = 81
@@ -95,25 +100,29 @@ class LoadDataset_NAB(object):
             pfc_feat_path_train = main_dir + 'data/NABird/pfc_feat_train_hard.mat'
             pfc_feat_path_test = main_dir + 'data/NABird/pfc_feat_test_hard.mat'
             if is_val:
-                train_cls_num = 258
-                test_cls_num = 65
+                train_cls_num = 323
+                val_cls_num = 21
+                test_cls_num = 60
             else:
                 train_cls_num = 323
                 test_cls_num = 81
 
         if is_val:
-            data_features = sio.loadmat(pfc_feat_path_train)['pfc_feat'].astype(np.float32)
-            with open(pfc_label_path_train) as fout:
+            data_features = sio.loadmat(pfc_feat_path_test)['pfc_feat'].astype(np.float32)
+            with open(pfc_label_path_test, 'rb') as fout:
                 data_labels = pickle.load(fout, encoding="latin1")
 
-            self.pfc_feat_data_train = data_features[data_labels < train_cls_num]
-            self.pfc_feat_data_test = data_features[data_labels >= train_cls_num]
-            self.labels_train = data_labels[data_labels < train_cls_num]
-            self.labels_test = data_labels[data_labels >= train_cls_num] - train_cls_num
+            self.pfc_feat_data_test = data_features[data_labels < test_cls_num]
+            self.pfc_feat_data_val = data_features[data_labels >= test_cls_num]
+            self.pfc_feat_data_train = sio.loadmat(pfc_feat_path_train)['pfc_feat'].astype(np.float32)
+            self.labels_test = data_labels[data_labels < test_cls_num]
+            self.labels_val = data_labels[data_labels >= test_cls_num] - test_cls_num
+            with open(pfc_label_path_train, 'rb') as fout:
+                self.labels_train = pickle.load(fout, encoding="latin1")
 
-            text_features, _ = get_text_feature(txt_feat_path, train_test_split_dir)  # Z_tr, Z_te
-            self.train_text_feature, self.test_text_feature = text_features[:train_cls_num], text_features[
-                                                                                             train_cls_num:]
+            self.train_text_feature, text_features = get_text_feature(txt_feat_path, train_test_split_dir)  # Z_tr, Z_te
+            self.test_text_feature, self.val_text_feature = text_features[:test_cls_num], text_features[
+                                                                                             test_cls_num:]
             self.text_dim = self.train_text_feature.shape[1]
         else:
             self.pfc_feat_data_train = sio.loadmat(pfc_feat_path_train)['pfc_feat'].astype(np.float32)
@@ -124,6 +133,7 @@ class LoadDataset_NAB(object):
                 self.labels_test = pickle.load(fout2, encoding="latin1")
 
         self.train_cls_num = train_cls_num  # Y_train
+        self.val_cls_num = val_cls_num
         self.test_cls_num = test_cls_num  # Y_test
         self.feature_dim = self.pfc_feat_data_train.shape[1]
 
@@ -136,11 +146,6 @@ class LoadDataset_NAB(object):
         self.tr_cls_centroid = np.zeros([train_cls_num, self.pfc_feat_data_train.shape[1]]).astype(np.float32)
         for i in range(train_cls_num):
             self.tr_cls_centroid[i] = np.mean(self.pfc_feat_data_train[self.labels_train == i], axis=0)
-
-        if not is_val:
-            self.train_text_feature, self.test_text_feature = get_text_feature(txt_feat_path, train_test_split_dir)
-            self.text_dim = self.train_text_feature.shape[1]
-
 
 class FeatDataLayer(object):
     def __init__(self, label, feat_data, opt):

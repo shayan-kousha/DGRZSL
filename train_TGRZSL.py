@@ -30,12 +30,13 @@ from models import _netD, _netG, _netT, _classifier, _param
 
 parser = argparse.ArgumentParser()
 
+parser.add_argument('--is_val', type=bool, help='use validation set', default=False)
 parser.add_argument('--model_number', type=int,
                     help='Model-Number: 1 for GAZSL, 2 for CIZSL, 3 for TGRZSL and 4 for CIZSL + TGRZSL ', default=1)
 parser.add_argument('--dataset', type=str, help='dataset to be used: CUB/NAB', default='NAB')
 parser.add_argument('--splitmode', type=str, help='the way to split train/test data: easy/hard', default='hard')
 parser.add_argument('--sim_func_number', type=int, help='Model-Number: 1 for cosine similarity and 2 MSE,', default=1)
-parser.add_argument('--exp_name', default='Reproduce', type=str, help='Experiment Name')
+parser.add_argument('--exp_name', default='Test', type=str, help='Experiment Name')
 parser.add_argument('--main_dir', default='./', type=str,
                     help='Main Directory including data folder')
 parser.add_argument('--creativity_weight', type=float, default=None, help='Weight of CIZSL loss- '
@@ -397,19 +398,50 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
 
         if it % opt.evl_interval == 0 and it > opt.disp_interval:
             netG.eval()
-            cur_acc, cur_nn_acc = eval_fakefeat_test(it, netG, dataset, param, result)
-            cur_auc = eval_fakefeat_GZSL(netG, dataset, param, out_subdir, result)
+            if is_val:
+                cur_acc, cur_nn_acc = eval_fakefeat_test(
+                    netG,
+                    dataset.val_cls_num,
+                    dataset.val_text_feature,
+                    dataset.pfc_feat_data_val,
+                    dataset.labels_val,
+                    param,
+                    result)
+
+                cur_auc = eval_fakefeat_GZSL(
+                    netG,
+                    dataset,
+                    dataset.val_cls_num,
+                    dataset.val_text_feature,
+                    dataset.pfc_feat_data_val,
+                    dataset.labels_val,
+                    param,
+                    out_subdir,
+                    result)
+            else:
+                cur_acc, cur_nn_acc = eval_fakefeat_test(
+                    netG,
+                    dataset.test_cls_num,
+                    dataset.test_text_feature,
+                    dataset.pfc_feat_data_test,
+                    dataset.labels_test,
+                    param,
+                    result)
+                cur_auc = eval_fakefeat_GZSL(
+                    netG,
+                    dataset,
+                    dataset.test_cls_num,
+                    dataset.test_text_feature,
+                    dataset.pfc_feat_data_test,
+                    dataset.labels_test,
+                    param,
+                    out_subdir,
+                    result)
 
             if cur_acc > result.best_acc:
-              result.best_acc = cur_acc
+                result.best_acc = cur_acc
 
-            if cur_nn_acc > result.best_nn_acc:
-                result.best_nn_acc = cur_nn_acc
-
-            if cur_auc > result.best_auc:
-                result.best_auc = cur_auc
-
-                files2remove = glob.glob(out_subdir + '/Best_model*')
+                files2remove = glob.glob(out_subdir + '/Best_model_ACC*')
                 for _i in files2remove:
                     os.remove(_i)
 
@@ -425,7 +457,33 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                     save_dict.update({
                     'state_dict_T': netT.state_dict()
                     })
-                torch.save(save_dict, out_subdir + '/Best_model_AUC_{:.2f}.tar'.format(cur_auc))
+                best_model_acc_path = '/Best_model_ACC_{:.2f}.tar'.format(cur_acc)
+                torch.save(save_dict, out_subdir + best_model_acc_path)
+
+            if cur_nn_acc > result.best_nn_acc:
+                result.best_nn_acc = cur_nn_acc
+
+            if cur_auc > result.best_auc:
+                result.best_auc = cur_auc
+
+                files2remove = glob.glob(out_subdir + '/Best_model_AUC*')
+                for _i in files2remove:
+                    os.remove(_i)
+
+                save_dict = {
+                    'it': it + 1,
+                    'state_dict_G': netG.state_dict(),
+                    'state_dict_D': netD.state_dict(),
+                    'random_seed': opt.manualSeed,
+                    'log': log_text,
+                }
+
+                if model_num == 3 or model_num == 4:
+                    save_dict.update({
+                    'state_dict_T': netT.state_dict()
+                    })
+                best_model_auc_path = '/Best_model_AUC_{:.2f}.tar'.format(cur_auc)
+                torch.save(save_dict, out_subdir + best_model_auc_path)
 
             # log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, 
             # fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean
@@ -436,10 +494,61 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
             with open(log_dir_2, 'a') as f:
                 f.write(log_text_2 + '\n')
             netG.train()
+
+    if is_val:
+        if os.path.isfile(out_subdir + best_model_acc_path):
+            print("=> loading checkpoint '{}'".format(best_model_acc_path))
+            checkpoint = torch.load(out_subdir + best_model_acc_path)
+            netG.load_state_dict(checkpoint['state_dict_G'])
+            netD.load_state_dict(checkpoint['state_dict_D'])
+            if model_num == 3 or model_num == 4:
+                netT.load_state_dict(checkpoint['state_dict_T'])
+            it = checkpoint['it']
+            print("iteration: {}".format(it))
+
+            netG.eval()
+            test_acc, test_nn_acc = eval_fakefeat_test(
+                netG,
+                dataset.test_cls_num,
+                dataset.test_text_feature,
+                dataset.pfc_feat_data_test,
+                dataset.labels_test,
+                param,
+                result)
+
+            result.test_acc = test_acc
+        else:
+            print("=> no checkpoint found at '{}'".format(best_model_acc_path))
+
+        if os.path.isfile(out_subdir + best_model_auc_path):
+            print("=> loading checkpoint '{}'".format(best_model_auc_path))
+            checkpoint = torch.load(out_subdir + best_model_auc_path)
+            netG.load_state_dict(checkpoint['state_dict_G'])
+            netD.load_state_dict(checkpoint['state_dict_D'])
+            if model_num == 3 or model_num == 4:
+                netT.load_state_dict(checkpoint['state_dict_T'])
+            it = checkpoint['it']
+            print("iteration: {}".format(it))
+
+            netG.eval()
+            test_auc = eval_fakefeat_GZSL(
+                    netG,
+                    dataset,
+                    dataset.test_cls_num,
+                    dataset.test_text_feature,
+                    dataset.pfc_feat_data_test,
+                    dataset.labels_test,
+                    param,
+                    out_subdir,
+                    result)
+
+            result.test_auc = test_auc
+        else:
+            print("=> no checkpoint found at '{}'".format(best_model_auc_path))
+
     return result
 
-
-def eval_fakefeat_GZSL(netG, dataset, param, plot_dir, result):
+def eval_fakefeat_GZSL(netG, dataset, cls_num, text_feature, pfc_feat_data, gt_labels, param, plot_dir, result):
     gen_feat = np.zeros([0, param.X_dim])
     for i in range(dataset.train_cls_num):
         text_feat = np.tile(dataset.train_text_feature[i].astype('float32'), (opt.nSample, 1))
@@ -448,22 +557,22 @@ def eval_fakefeat_GZSL(netG, dataset, param, plot_dir, result):
         G_sample = netG(z, text_feat)
         gen_feat = np.vstack((gen_feat, G_sample.data.cpu().numpy()))
 
-    for i in range(dataset.test_cls_num):
-        text_feat = np.tile(dataset.test_text_feature[i].astype('float32'), (opt.nSample, 1))
+    for i in range(cls_num):
+        text_feat = np.tile(text_feature[i].astype('float32'), (opt.nSample, 1))
         text_feat = Variable(torch.from_numpy(text_feat)).cuda()
         z = Variable(torch.randn(opt.nSample, param.z_dim)).cuda()
         G_sample = netG(z, text_feat)
         gen_feat = np.vstack((gen_feat, G_sample.data.cpu().numpy()))
 
     visual_pivots = [gen_feat[i * opt.nSample:(i + 1) * opt.nSample].mean(0) \
-                     for i in range(dataset.train_cls_num + dataset.test_cls_num)]
+                     for i in range(dataset.train_cls_num + cls_num)]
     visual_pivots = np.vstack(visual_pivots)
 
     """collect points for gzsl curve"""
 
     acc_S_T_list, acc_U_T_list = list(), list()
     seen_sim = cosine_similarity(dataset.pfc_feat_data_train, visual_pivots)
-    unseen_sim = cosine_similarity(dataset.pfc_feat_data_test, visual_pivots)
+    unseen_sim = cosine_similarity(pfc_feat_data, visual_pivots)
     for GZSL_lambda in np.arange(-2, 2, 0.01):
         tmp_seen_sim = copy.deepcopy(seen_sim)
         tmp_seen_sim[:, dataset.train_cls_num:] += GZSL_lambda
@@ -473,7 +582,7 @@ def eval_fakefeat_GZSL(netG, dataset, param, plot_dir, result):
         tmp_unseen_sim = copy.deepcopy(unseen_sim)
         tmp_unseen_sim[:, dataset.train_cls_num:] += GZSL_lambda
         pred_lbl = np.argmax(tmp_unseen_sim, axis=1)
-        acc_U_T_list.append((pred_lbl == (np.asarray(dataset.labels_test) + dataset.train_cls_num)).mean())
+        acc_U_T_list.append((pred_lbl == (np.asarray(gt_labels) + dataset.train_cls_num)).mean())
 
     auc_score = integrate.trapz(y=acc_S_T_list, x=acc_U_T_list) * 100.0
     plt.plot(acc_S_T_list, acc_U_T_list)
@@ -508,11 +617,11 @@ def train_classifier(train_data, train_label, test_data, test_label, num_class):
     acc = (np.asarray(torch.argmax(outputs, 1)) == test_label).mean() * 100
     return acc
 
-def eval_fakefeat_test(it, netG, dataset, param, result):
+def eval_fakefeat_test(netG, cls_num, text_feature, pfc_feat_data, gt_labels, param, result):
     gen_feat = np.zeros([0, param.X_dim])
     gen_labels = np.zeros([0])
-    for i in range(dataset.test_cls_num):
-        text_feat = np.tile(dataset.test_text_feature[i].astype('float32'), (opt.nSample, 1))
+    for i in range(cls_num):
+        text_feat = np.tile(text_feature[i].astype('float32'), (opt.nSample, 1))
         text_feat = Variable(torch.from_numpy(text_feat)).cuda()
         z = Variable(torch.randn(opt.nSample, param.z_dim)).cuda()
         G_sample = netG(z, text_feat)
@@ -522,7 +631,7 @@ def eval_fakefeat_test(it, netG, dataset, param, result):
         gen_labels = np.hstack((gen_labels, labels))
 
     # cosince predict K-nearest Neighbor
-    sim = cosine_similarity(dataset.pfc_feat_data_test, gen_feat)
+    sim = cosine_similarity(pfc_feat_data, gen_feat)
     idx_mat = np.argsort(-1 * sim, axis=1)
     label_mat = (idx_mat[:, 0:opt.Knn] / opt.nSample).astype(int)
     preds = np.zeros(label_mat.shape[0])
@@ -531,10 +640,10 @@ def eval_fakefeat_test(it, netG, dataset, param, result):
         preds[i] = values[np.argmax(counts)]
 
     # produce acc
-    label_T = np.asarray(dataset.labels_test)
+    label_T = np.asarray(gt_labels)
     acc = (preds == label_T).mean() * 100
 
-    nn_acc = train_classifier(gen_feat, gen_labels, dataset.pfc_feat_data_test, label_T, dataset.test_cls_num)
+    nn_acc = train_classifier(gen_feat, gen_labels, pfc_feat_data, label_T, cls_num)
     result.acc_list += [acc]
     return acc, nn_acc
 
@@ -545,6 +654,8 @@ class Result(object):
         self.best_nn_acc = 0.0
         self.best_auc = 0.0
         self.best_iter = 0.0
+        self.test_acc = 0.0
+        self.test_auc = 0.0
         self.acc_list = []
         self.auc_list = []
 
@@ -592,19 +703,19 @@ if __name__ == "__main__":
     torch.cuda.manual_seed_all(opt.manualSeed)
 
     if opt.model_number == 1:
-        result = train(model_num=opt.model_number, is_val=False)
+        result = train(model_num=opt.model_number, is_val=opt.is_val)
     elif opt.model_number == 2:
         assert opt.creativity_weight is not None
-        result = train(model_num=opt.model_number, is_val=False, creative_weight=opt.creativity_weight)
+        result = train(model_num=opt.model_number, is_val=opt.is_val, creative_weight=opt.creativity_weight)
     elif opt.model_number == 3:
         assert opt.sim_func_number is not None
-        result = train(model_num=opt.model_number, is_val=False, sim_func_number=opt.sim_func_number)
+        result = train(model_num=opt.model_number, is_val=opt.is_val, sim_func_number=opt.sim_func_number)
     elif opt.model_number == 4:
         assert opt.creativity_weight is not None
         assert opt.sim_func_number is not None
         result = train(
             model_num=opt.model_number,
-            is_val=False,
+            is_val=opt.is_val,
             creative_weight=opt.creativity_weight,
             sim_func_number=opt.sim_func_number
         )
@@ -616,6 +727,6 @@ if __name__ == "__main__":
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
     print(
-        "Accuracy is {:.4}%, NN Accuracy is {:.4}%, and Generalized AUC is {:.4}%"
-        .format(result.best_acc, result.best_nn_acc, result.best_auc)
+        "Accuracy is {:.4}%, NN Accuracy is {:.4}%, and Generalized AUC is {:.4}% test_acc {:.4}% test_auc {:.4}% "
+        .format(result.best_acc, result.best_nn_acc, result.best_auc, result.test_acc, result.test_auc)
     )
