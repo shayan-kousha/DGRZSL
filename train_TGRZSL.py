@@ -518,7 +518,7 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
 
             result.test_acc = test_acc
         else:
-            print("=> no checkpoint found at '{}'".format(best_model_acc_path))
+            print("=> no checkpoint found at '{}'".format(out_subdir + best_model_acc_path))
 
         if os.path.isfile(out_subdir + best_model_auc_path):
             print("=> loading checkpoint '{}'".format(best_model_auc_path))
@@ -544,7 +544,11 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
 
             result.test_auc = test_auc
         else:
-            print("=> no checkpoint found at '{}'".format(best_model_auc_path))
+            print("=> no checkpoint found at '{}'".format(out_subdir + best_model_auc_path))
+
+        log_text_2 = 'test_acc: %f, test_auc: %f' % (result.test_acc, result.test_auc)
+        with open(log_dir_2, 'a') as f:
+            f.write(log_text_2 + '\n')
 
     return result
 
