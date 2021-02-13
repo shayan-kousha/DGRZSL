@@ -7,9 +7,9 @@ h_dim = 4086
 
 
 class _param:
-    def __init__(self):
+    def __init__(self, zdim=z_dim):
         self.rdc_text_dim = rdc_text_dim
-        self.z_dim = z_dim
+        self.z_dim = zdim
         self.h_dim = h_dim
 
 
@@ -54,3 +54,16 @@ class _netT(nn.Module):
     
     def forward(self, input):
         return self.T_layer(input)
+
+class _netG_att(nn.Module):
+    def __init__(self, param, att_dim, X_dim):
+        super(_netG_att, self).__init__()
+        self.main = nn.Sequential(nn.Linear(param.z_dim + att_dim, h_dim),
+                                  nn.LeakyReLU(),
+                                  nn.Linear(h_dim, X_dim),
+                                  nn.Tanh())
+    def forward(self, z, c):
+        input = torch.cat([z, c], 1)
+        output = self.main(input)
+
+        return output

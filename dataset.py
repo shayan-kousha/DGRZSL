@@ -26,6 +26,7 @@ class LoadDataset_GBU(object):
         self.train_cls_num = self.train_seen_classes.shape[0]
         self.val_cls_num = self.val_unseen_classes.shape[0]
         self.test_cls_num = self.test_unseen_classes.shape[0]
+        self.test_seen_cls_num = self.test_seen_classes.shape[0]
         self.tr_cls_centroid = np.zeros([self.train_seen_classes.shape[0], self.feature_dim], np.float32)  # .astype(np.float32)
         for i in range(self.train_seen_classes.shape[0]):
             self.tr_cls_centroid[i] = np.mean(self.train_feature[self.train_label == i].numpy(), axis=0)
@@ -158,8 +159,9 @@ class LoadDataset_GBU(object):
         self.test_unseen_label = map_label(self.test_unseen_label, self.test_unseen_classes)
         self.test_seen_label = map_label(self.test_seen_label, self.test_seen_classes)
         self.train_att = self.attribute[self.train_seen_classes].numpy()
-        self.val_att  = self.attribute[self.val_unseen_classes].numpy()
-        self.test_att  = self.attribute[self.test_unseen_classes].numpy()
+        self.val_att = self.attribute[self.val_unseen_classes].numpy()
+        self.test_att = self.attribute[self.test_unseen_classes].numpy()
+        self.test_seen_att = self.attribute[self.test_seen_classes].numpy()
 
 class LoadDataset(object):
     def __init__(self, opt, main_dir, is_val=True):
