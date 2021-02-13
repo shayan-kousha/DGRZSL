@@ -54,15 +54,3 @@ class _netT(nn.Module):
     
     def forward(self, input):
         return self.T_layer(input)
-
-class _classifier(nn.Module):
-    def __init__(self, input_dim=3584, out_dim=50):
-        super(_classifier, self).__init__()
-        self.classifier = nn.Sequential(nn.Linear(input_dim, int(input_dim / 2)),
-                                        nn.ReLU(),
-                                        nn.Linear(int(input_dim / 2), int(input_dim / 10)),
-                                        nn.ReLU(),
-                                        nn.Linear(int(input_dim/ 10), out_dim))
-
-    def forward(self, x):
-        return self.classifier(x)

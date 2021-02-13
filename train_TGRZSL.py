@@ -25,12 +25,15 @@ import copy
 import sys
 from tqdm import tqdm
 
-from dataset import FeatDataLayer, LoadDataset, LoadDataset_NAB
-from models import _netD, _netG, _netT, _classifier, _param
+from dataset import FeatDataLayer, LoadDataset, LoadDataset_NAB, LoadDataset_GBU
+from models import _netD, _netG, _netT, _param
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--is_val', type=bool, help='use validation set', default=False)
+parser.add_argument('--is_val', action='store_true', help='use validation set', default=False)
+parser.add_argument('--preprocessing', action='store_true', default=False,
+                    help='enbale MinMaxScaler on visual features')
+parser.add_argument('--standardization', action='store_true', default=False)
 parser.add_argument('--model_number', type=int,
                     help='Model-Number: 1 for GAZSL, 2 for CIZSL, 3 for TGRZSL and 4 for CIZSL + TGRZSL ', default=1)
 parser.add_argument('--dataset', type=str, help='dataset to be used: CUB/NAB', default='NAB')
@@ -117,18 +120,26 @@ class Scale(nn.Module):
 
 def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
     param = _param()
+    best_model_acc_path = best_model_auc_path = best_model_hm_path = ''
     if opt.dataset == 'CUB':
         dataset = LoadDataset(opt, main_dir, is_val)
         exp_info = 'CUB_EASY' if opt.splitmode == 'easy' else 'CUB_HARD'
+        opt.is_gbu = False
     elif opt.dataset == 'NAB':
         dataset = LoadDataset_NAB(opt, main_dir, is_val)
         exp_info = 'NAB_EASY' if opt.splitmode == 'easy' else 'NAB_HARD'
+        opt.is_gbu = False
+    elif "GBU" in opt.dataset:
+        opt.dataset = opt.dataset.split('_')[1]
+        opt.is_gbu = True
+        exp_info = opt.dataset
+        dataset = LoadDataset_GBU(opt, main_dir, is_val)
     else:
         print('No Dataset with that name')
         sys.exit(0)
     param.X_dim = dataset.feature_dim
 
-    data_layer = FeatDataLayer(dataset.labels_train, dataset.pfc_feat_data_train, opt)
+    data_layer = FeatDataLayer(np.array(dataset.train_label), np.array(dataset.train_feature), opt)
     result = Result()
 
     ones = Variable(torch.Tensor(1, 1))
@@ -204,8 +215,8 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
         labels = blobs['labels'].astype(int)
         new_class_labels = Variable(
             torch.from_numpy(np.ones_like(labels) * dataset.train_cls_num)).cuda()
-        text_feat_1 = np.array([dataset.train_text_feature[i, :] for i in labels])
-        text_feat_2 = np.array([dataset.train_text_feature[i, :] for i in labels])
+        text_feat_1 = np.array([dataset.train_att[i, :] for i in labels])
+        text_feat_2 = np.array([dataset.train_att[i, :] for i in labels])
         np.random.shuffle(text_feat_1)  # Shuffle both features to guarantee different permutations
         np.random.shuffle(text_feat_2)
         alpha = (np.random.random(len(labels)) * (.8 - .2)) + .2
@@ -225,7 +236,7 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                 feat_data = blobs['data']  # image data
                 labels = blobs['labels'].astype(int)  # class labels
 
-                text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
+                text_feat = np.array([dataset.train_att[i, :] for i in labels])
                 text_feat_TG = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
                 X = Variable(torch.from_numpy(feat_data)).cuda()
                 y_true = Variable(torch.from_numpy(labels.astype('int'))).cuda()
@@ -258,7 +269,7 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
             feat_data = blobs['data']  # image data
             labels = blobs['labels'].astype(int)  # class labels
 
-            text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
+            text_feat = np.array([dataset.train_att[i, :] for i in labels])
             text_feat = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
             X = Variable(torch.from_numpy(feat_data)).cuda()
             y_true = Variable(torch.from_numpy(labels.astype('int'))).cuda()
@@ -293,7 +304,7 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
             blobs = data_layer.forward()
             feat_data = blobs['data']  # image data
             labels = blobs['labels'].astype(int)  # class labels
-            text_feat = np.array([dataset.train_text_feature[i, :] for i in labels])
+            text_feat = np.array([dataset.train_att[i, :] for i in labels])
             text_feat = Variable(torch.from_numpy(text_feat.astype('float32'))).cuda()
 
             X = Variable(torch.from_numpy(feat_data)).cuda()
@@ -311,10 +322,10 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
 
             # GAN's G loss creative
             G_sample_creative = netG(z, text_feat_Creative).detach()
-            D_creative_fake, _ = netD(G_sample_creative)
-            G_loss_fake_creative = torch.mean(D_creative_fake)
 
             if model_num == 3 or model_num == 4:
+                D_creative_fake, _ = netD(G_sample_creative)
+                G_loss_fake_creative = torch.mean(D_creative_fake)
                 T_fake = netT(G_sample)
                 T_loss_fake = torch.mean(similarity_func(text_feat, T_fake))
 
@@ -323,7 +334,7 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
 
                 GC_loss = -G_loss - G_loss_fake_creative + C_loss - T_loss_fake - T_loss_fake_creative
             else:
-                GC_loss = -G_loss - G_loss_fake_creative + C_loss
+                GC_loss = -G_loss + C_loss
 
             # Centroid loss
             Euclidean_loss = Variable(torch.Tensor([0.0])).cuda()
@@ -397,46 +408,58 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                 f.write(log_text + '\n')
 
         if it % opt.evl_interval == 0 and it > opt.disp_interval:
+            cur_acc = 0
+            cur_auc = 0
+            cur_hm = 0
+
             netG.eval()
             if is_val:
-                cur_acc, cur_nn_acc = eval_fakefeat_test(
+                cur_acc = eval_fakefeat_test(
                     netG,
                     dataset.val_cls_num,
-                    dataset.val_text_feature,
-                    dataset.pfc_feat_data_val,
-                    dataset.labels_val,
+                    dataset.val_att,
+                    dataset.val_unseen_feature,
+                    dataset.val_unseen_label,
                     param,
                     result)
 
-                cur_auc = eval_fakefeat_GZSL(
-                    netG,
-                    dataset,
-                    dataset.val_cls_num,
-                    dataset.val_text_feature,
-                    dataset.pfc_feat_data_val,
-                    dataset.labels_val,
-                    param,
-                    out_subdir,
-                    result)
+                if opt.is_gbu:
+                    cur_hm = eval_fakefeat_test_gzsl(netG, dataset, param, result)
+                else:
+                    cur_auc = eval_fakefeat_GZSL(
+                        netG,
+                        dataset,
+                        dataset.val_cls_num,
+                        dataset.val_att,
+                        dataset.val_unseen_feature,
+                        dataset.val_unseen_label,
+                        param,
+                        out_subdir,
+                        result)
             else:
-                cur_acc, cur_nn_acc = eval_fakefeat_test(
+                cur_acc = eval_fakefeat_test(
                     netG,
                     dataset.test_cls_num,
-                    dataset.test_text_feature,
-                    dataset.pfc_feat_data_test,
-                    dataset.labels_test,
+                    dataset.test_att,
+                    dataset.test_unseen_feature,
+                    dataset.test_unseen_label,
                     param,
                     result)
-                cur_auc = eval_fakefeat_GZSL(
-                    netG,
-                    dataset,
-                    dataset.test_cls_num,
-                    dataset.test_text_feature,
-                    dataset.pfc_feat_data_test,
-                    dataset.labels_test,
-                    param,
-                    out_subdir,
-                    result)
+
+                if opt.is_gbu:
+                    cur_hm = eval_fakefeat_test_gzsl(netG, dataset, param, result)
+                else:
+                    cur_auc = eval_fakefeat_GZSL(
+                        netG,
+                        dataset,
+                        dataset.test_cls_num,
+                        dataset.test_att,
+                        dataset.test_unseen_feature,
+                        dataset.test_unseen_label,
+                        param,
+                        out_subdir,
+                        result)
+
 
             if cur_acc > result.best_acc:
                 result.best_acc = cur_acc
@@ -460,9 +483,6 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                 best_model_acc_path = '/Best_model_ACC_{:.2f}.tar'.format(cur_acc)
                 torch.save(save_dict, out_subdir + best_model_acc_path)
 
-            if cur_nn_acc > result.best_nn_acc:
-                result.best_nn_acc = cur_nn_acc
-
             if cur_auc > result.best_auc:
                 result.best_auc = cur_auc
 
@@ -485,12 +505,30 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                 best_model_auc_path = '/Best_model_AUC_{:.2f}.tar'.format(cur_auc)
                 torch.save(save_dict, out_subdir + best_model_auc_path)
 
-            # log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f, real_sim: %f, fake_sim: %f, 
-            # fake_creative_sim: %f' % (it, result.best_acc, result.best_nn_acc, result.best_auc, float(torch.mean
-            # (similarity_func(text_feat_TG, T_real)).data), float(torch.mean(similarity_func(text_feat_TG, T_fake_TG))
-            # .data), float(torch.mean(similarity_func(text_feat_Creative, T_fake_creative_TG)).data))
-            log_text_2 = 'iteration: %f, best_acc: %f, best_nn_acc: %f, best_auc: %f' % (
-                it, result.best_acc, result.best_nn_acc, result.best_auc)
+            if cur_hm > result.best_hm:
+                result.best_hm = cur_hm
+
+                files2remove = glob.glob(out_subdir + '/Best_model_HM*')
+                for _i in files2remove:
+                    os.remove(_i)
+
+                save_dict = {
+                    'it': it + 1,
+                    'state_dict_G': netG.state_dict(),
+                    'state_dict_D': netD.state_dict(),
+                    'random_seed': opt.manualSeed,
+                    'log': log_text,
+                }
+
+                if model_num == 3 or model_num == 4:
+                    save_dict.update({
+                    'state_dict_T': netT.state_dict()
+                    })
+                best_model_hm_path = '/Best_model_HM_{:.2f}.tar'.format(cur_hm)
+                torch.save(save_dict, out_subdir + best_model_hm_path)
+
+            log_text_2 = 'iteration: %f, best_acc: %f, best_auc: %f, best_hm: %f' % (
+                it, result.best_acc, result.best_auc, result.best_hm)
             with open(log_dir_2, 'a') as f:
                 f.write(log_text_2 + '\n')
             netG.train()
@@ -507,12 +545,12 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
             print("iteration: {}".format(it))
 
             netG.eval()
-            test_acc, test_nn_acc = eval_fakefeat_test(
+            test_acc = eval_fakefeat_test(
                 netG,
                 dataset.test_cls_num,
-                dataset.test_text_feature,
-                dataset.pfc_feat_data_test,
-                dataset.labels_test,
+                dataset.test_att,
+                dataset.test_unseen_feature,
+                dataset.test_unseen_label,
                 param,
                 result)
 
@@ -535,9 +573,9 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                     netG,
                     dataset,
                     dataset.test_cls_num,
-                    dataset.test_text_feature,
-                    dataset.pfc_feat_data_test,
-                    dataset.labels_test,
+                    dataset.test_att,
+                    dataset.test_unseen_feature,
+                    dataset.test_unseen_label,
                     param,
                     out_subdir,
                     result)
@@ -546,7 +584,24 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
         else:
             print("=> no checkpoint found at '{}'".format(out_subdir + best_model_auc_path))
 
-        log_text_2 = 'test_acc: %f, test_auc: %f' % (result.test_acc, result.test_auc)
+        if os.path.isfile(out_subdir + best_model_hm_path):
+            print("=> loading checkpoint '{}'".format(best_model_hm_path))
+            checkpoint = torch.load(out_subdir + best_model_hm_path)
+            netG.load_state_dict(checkpoint['state_dict_G'])
+            netD.load_state_dict(checkpoint['state_dict_D'])
+            if model_num == 3 or model_num == 4:
+                netT.load_state_dict(checkpoint['state_dict_T'])
+            it = checkpoint['it']
+            print("iteration: {}".format(it))
+
+            netG.eval()
+            test_hm = eval_fakefeat_test_gzsl(netG, dataset, param, result)
+
+            result.test_hm = test_hm
+        else:
+            print("=> no checkpoint found at '{}'".format(out_subdir + best_model_hm_path))
+
+        log_text_2 = 'test_acc: %f, test_auc: %f, test_hm: %f' % (result.test_acc, result.test_auc, result.test_hm)
         with open(log_dir_2, 'a') as f:
             f.write(log_text_2 + '\n')
 
@@ -555,7 +610,7 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
 def eval_fakefeat_GZSL(netG, dataset, cls_num, text_feature, pfc_feat_data, gt_labels, param, plot_dir, result):
     gen_feat = np.zeros([0, param.X_dim])
     for i in range(dataset.train_cls_num):
-        text_feat = np.tile(dataset.train_text_feature[i].astype('float32'), (opt.nSample, 1))
+        text_feat = np.tile(dataset.train_att[i].astype('float32'), (opt.nSample, 1))
         text_feat = Variable(torch.from_numpy(text_feat)).cuda()
         z = Variable(torch.randn(opt.nSample, param.z_dim)).cuda()
         G_sample = netG(z, text_feat)
@@ -575,13 +630,13 @@ def eval_fakefeat_GZSL(netG, dataset, cls_num, text_feature, pfc_feat_data, gt_l
     """collect points for gzsl curve"""
 
     acc_S_T_list, acc_U_T_list = list(), list()
-    seen_sim = cosine_similarity(dataset.pfc_feat_data_train, visual_pivots)
+    seen_sim = cosine_similarity(dataset.train_feature, visual_pivots)
     unseen_sim = cosine_similarity(pfc_feat_data, visual_pivots)
     for GZSL_lambda in np.arange(-2, 2, 0.01):
         tmp_seen_sim = copy.deepcopy(seen_sim)
         tmp_seen_sim[:, dataset.train_cls_num:] += GZSL_lambda
         pred_lbl = np.argmax(tmp_seen_sim, axis=1)
-        acc_S_T_list.append((pred_lbl == np.asarray(dataset.labels_train)).mean())
+        acc_S_T_list.append((pred_lbl == np.asarray(dataset.train_label)).mean())
 
         tmp_unseen_sim = copy.deepcopy(unseen_sim)
         tmp_unseen_sim[:, dataset.train_cls_num:] += GZSL_lambda
@@ -597,29 +652,6 @@ def eval_fakefeat_GZSL(netG, dataset, cls_num, text_feature, pfc_feat_data, gt_l
     np.savetxt(plot_dir + '/best_plot.txt', np.vstack([acc_S_T_list, acc_U_T_list]))
     result.auc_list += [auc_score]
     return auc_score
-
-def train_classifier(train_data, train_label, test_data, test_label, num_class):
-    classifier = _classifier(train_data.shape[1], num_class).cuda()
-    classifier.apply(weights_init)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(classifier.parameters(), lr=0.01, betas=(0.5, 0.9))
-
-    for epoch in range(50):
-        optimizer.zero_grad()
-
-        # forward + backward + optimize
-        X = Variable(torch.from_numpy(train_data)).cuda().type(torch.cuda.FloatTensor)
-        y = Variable(torch.from_numpy(train_label)).cuda().type(torch.cuda.LongTensor) 
-
-        outputs = classifier(X)
-        loss = criterion(outputs, y)
-        loss.backward()
-        optimizer.step()
-
-    X_test = Variable(torch.from_numpy(test_data)).cuda().type(torch.cuda.FloatTensor)
-    outputs = classifier(X_test)
-    acc = (np.asarray(torch.argmax(outputs, 1)) == test_label).mean() * 100
-    return acc
 
 def eval_fakefeat_test(netG, cls_num, text_feature, pfc_feat_data, gt_labels, param, result):
     gen_feat = np.zeros([0, param.X_dim])
@@ -647,21 +679,78 @@ def eval_fakefeat_test(netG, cls_num, text_feature, pfc_feat_data, gt_labels, pa
     label_T = np.asarray(gt_labels)
     acc = (preds == label_T).mean() * 100
 
-    nn_acc = train_classifier(gen_feat, gen_labels, pfc_feat_data, label_T, cls_num)
     result.acc_list += [acc]
-    return acc, nn_acc
+    return acc
 
+def eval_fakefeat_test_gzsl(netG, dataset, param, result):
+    #### TODO instead of using train_att use test_seen_at
+    from sklearn.metrics.pairwise import cosine_similarity
+    gen_feat_train_cls = np.zeros([0, param.X_dim])
+    for i in range(dataset.train_cls_num):
+        text_feat = np.tile(dataset.train_att[i].astype('float32'), (opt.nSample, 1))
+        text_feat = Variable(torch.from_numpy(text_feat)).cuda()
+        z = Variable(torch.randn(opt.nSample, param.z_dim)).cuda()
+        G_sample = netG(z, text_feat)
+        gen_feat_train_cls = np.vstack((gen_feat_train_cls, G_sample.data.cpu().numpy()))
+
+    gen_feat_test_cls = np.zeros([0, param.X_dim])
+    for i in range(dataset.test_cls_num):
+        text_feat = np.tile(dataset.test_att[i].astype('float32'), (opt.nSample, 1))
+        text_feat = Variable(torch.from_numpy(text_feat)).cuda()
+        z = Variable(torch.randn(opt.nSample, param.z_dim)).cuda()
+        G_sample = netG(z, text_feat)
+        gen_feat_test_cls = np.vstack((gen_feat_test_cls, G_sample.data.cpu().numpy()))
+
+    """  S -> T
+    """
+    sim = cosine_similarity(dataset.test_seen_feature, np.vstack((gen_feat_train_cls, gen_feat_test_cls)))
+    idx_mat = np.argsort(-1 * sim, axis=1)
+    label_mat = (idx_mat[:, 0:opt.Knn] / opt.nSample).astype(int)
+    preds = np.zeros(label_mat.shape[0])
+    for i in range(label_mat.shape[0]):
+        (values, counts) = np.unique(label_mat[i], return_counts=True)
+        preds[i] = values[np.argmax(counts)]
+    # produce MCA
+    label_T = np.asarray(dataset.test_seen_label)
+    acc = np.zeros(label_T.max() + 1)
+    for i in range(label_T.max() + 1):
+        acc[i] = (preds[label_T == i] == i).mean()
+    acc_S_T = acc.mean() * 100
+
+    """  U -> T
+    """
+    sim = cosine_similarity(dataset.test_unseen_feature, np.vstack((gen_feat_test_cls, gen_feat_train_cls)))
+    idx_mat = np.argsort(-1 * sim, axis=1)
+    label_mat = (idx_mat[:, 0:opt.Knn] / opt.nSample).astype(int)
+    preds = np.zeros(label_mat.shape[0])
+    for i in range(label_mat.shape[0]):
+        (values, counts) = np.unique(label_mat[i], return_counts=True)
+        preds[i] = values[np.argmax(counts)]
+    # produce MCA
+    label_T = np.asarray(dataset.test_unseen_label)
+    acc = np.zeros(label_T.max() + 1)
+    for i in range(label_T.max() + 1):
+        acc[i] = (preds[label_T == i] == i).mean()
+    acc_U_T = acc.mean() * 100
+    hm = (2 * acc_S_T * acc_U_T) / (acc_S_T + acc_U_T)
+
+    result.hm_list += [hm]
+
+    return hm
 
 class Result(object):
     def __init__(self):
         self.best_acc = 0.0
-        self.best_nn_acc = 0.0
         self.best_auc = 0.0
-        self.best_iter = 0.0
+        self.best_hm = 0.0
         self.test_acc = 0.0
         self.test_auc = 0.0
+        self.test_hm = 0.0
         self.acc_list = []
         self.auc_list = []
+        self.hm_list = []
+        self.best_acc_S_T = 0.0
+        self.best_acc_U_T = 0.0
 
 
 def weights_init(m):
@@ -731,6 +820,6 @@ if __name__ == "__main__":
     print('=' * 15)
     print(opt.exp_name, opt.dataset, opt.splitmode)
     print(
-        "Accuracy is {:.4}%, NN Accuracy is {:.4}%, and Generalized AUC is {:.4}% test_acc {:.4}% test_auc {:.4}% "
-        .format(result.best_acc, result.best_nn_acc, result.best_auc, result.test_acc, result.test_auc)
+        "train_acc {:.4}%, train_auc {:.4}%, train_hm {:.4}%, test_acc {:.4}%, test_auc {:.4}%, test_hm {:.4}%"
+        .format(result.best_acc, result.best_auc, result.best_hm, result.test_acc, result.test_auc, result.test_hm)
     )
