@@ -30,6 +30,7 @@ from models import _netD, _netG, _netT, _netG_att, _param
 
 parser = argparse.ArgumentParser()
 
+parser.add_argument('--lr', type=float, default=0.0001, help='learning rate')
 parser.add_argument('--z_dim',  type=int, default=100, help='dimension of the random vector z')
 parser.add_argument('--is_val', action='store_true', help='use validation set', default=False)
 parser.add_argument('--preprocessing', action='store_true', default=False,
@@ -40,7 +41,7 @@ parser.add_argument('--model_number', type=int,
 parser.add_argument('--dataset', type=str, help='dataset to be used: CUB/NAB', default='NAB')
 parser.add_argument('--splitmode', type=str, help='the way to split train/test data: easy/hard', default='hard')
 parser.add_argument('--sim_func_number', type=int, help='Model-Number: 1 for cosine similarity and 2 MSE,', default=1)
-parser.add_argument('--exp_name', default='Test', type=str, help='Experiment Name')
+parser.add_argument('--exp_name', default='Reproduce', type=str, help='Experiment Name')
 parser.add_argument('--main_dir', default='./', type=str,
                     help='Main Directory including data folder')
 parser.add_argument('--creativity_weight', type=float, default=None, help='Weight of CIZSL loss- '
@@ -53,7 +54,7 @@ parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--resume', type=str, help='the model to resume')
 parser.add_argument('--disp_interval', type=int, default=20)
 parser.add_argument('--save_interval', type=int, default=200)
-parser.add_argument('--evl_interval', type=int, default=100)  
+parser.add_argument('--evl_interval', type=int, default=100)
 
 opt = parser.parse_args()
 print(opt)
@@ -62,11 +63,14 @@ os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu
 
 """ hyper-parameter for training """
 opt.GP_LAMBDA = 10  # Gradient penalty lambda
-opt.CENT_LAMBDA = 1
+if "GBU" in opt.dataset:
+    opt.CENT_LAMBDA = 5
+else:
+    opt.CENT_LAMBDA = 1
 opt.REG_W_LAMBDA = 0.001
 opt.REG_Wz_LAMBDA = 0.0001
 
-opt.lr = 0.0001
+# opt.lr = 0.0001
 opt.batchsize = 1000
 
 """ hyper-parameter for testing"""
@@ -167,8 +171,8 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
     elif sim_func_number == 2:
         similarity_func = F.mse_loss
 
-    exp_params = 'Model_{}_is_val_{}_sim_func_number_{}_creative_weight_{}_{}'.format(
-        model_num, is_val, sim_func_number, creative_weight, opt.exp_name)
+    exp_params = 'Model_{}_is_val_{}_sim_func_number_{}_creative_weight_{}_lr_{}_zdim_{}_{}'.format(
+        model_num, is_val, sim_func_number, creative_weight, opt.lr, param.z_dim, opt.exp_name)
 
     out_subdir = main_dir + 'out/{:s}/{:s}'.format(exp_info, exp_params)
     if not os.path.exists(out_subdir):
@@ -366,7 +370,6 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                 Wz = netG.rdc_text.weight
                 reg_Wz_loss = Wz.pow(2).sum(dim=0).sqrt().sum().mul(opt.REG_Wz_LAMBDA)
 
-
             if model_num == 2 or model_num == 4:
                 # D(C| GX_fake)) + Classify GX_fake as real
                 D_creative_fake, C_creative_fake = netD(G_sample_creative)
@@ -481,7 +484,6 @@ def train(model_num=3, is_val=True, sim_func_number=None, creative_weight=None):
                         param,
                         out_subdir,
                         result)
-            print(cur_acc)
 
             if cur_acc > result.best_acc:
                 result.best_acc = cur_acc

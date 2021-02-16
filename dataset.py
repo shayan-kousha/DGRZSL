@@ -18,6 +18,7 @@ class LoadDataset_GBU(object):
             self.read_matimagenet(opt, main_dir)
         else:
             self.read_matdataset(opt, main_dir, is_val)
+
         self.index_in_epoch = 0
         self.epochs_completed = 0
         self.feature_dim = self.train_feature.shape[1]
@@ -220,8 +221,7 @@ class LoadDataset(object):
                 self.train_label = pickle.load(fout1, encoding="latin1")
                 self.test_unseen_label = pickle.load(fout2, encoding="latin1")
 
-            self.train_att, self.test_att = get_text_feature(txt_feat_path,
-                                                                               train_test_split_dir)  # Z_tr, Z_te
+            self.train_att, self.test_att = get_text_feature(txt_feat_path, train_test_split_dir)  # Z_tr, Z_te
             self.text_dim = self.train_att.shape[1]
 
         self.train_cls_num = train_cls_num  # Y_train
@@ -295,6 +295,9 @@ class LoadDataset_NAB(object):
             with open(pfc_label_path_train, 'rb') as fout1, open(pfc_label_path_test, 'rb') as fout2:
                 self.train_label = pickle.load(fout1, encoding="latin1")
                 self.test_unseen_label = pickle.load(fout2, encoding="latin1")
+
+            self.train_att, self.test_att = get_text_feature(txt_feat_path, train_test_split_dir)  # Z_tr, Z_te
+            self.text_dim = self.train_att.shape[1]
 
         self.train_cls_num = train_cls_num  # Y_train
         self.val_cls_num = val_cls_num
