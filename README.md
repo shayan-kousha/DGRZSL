@@ -1,7 +1,7 @@
-# TGRZSL
-[Text Generator Regularizer Zero-Shot Learning](https://github.com/shayan-kousha/TGRZSL/blob/master/Report.pdf)
+# DGRZSL
+Zero-shot Learning with Class Description Regularization
 
-Please contact me at koushashayan@gmail.com for questions.  
+Please contact me at shayanko@yorku.eecs.ca for questions.  
 
 # Requirements
 Python 3.5
